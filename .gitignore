@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.ipynb_checkpoints/
+
+# Large artifacts — never track
+data/
+checkpoints/
+*.IMG
+*.LBL
+*.tif
+*.tiff
+*.cub
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+.claude.json
+CLAUDE.md
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luna"
+version = "0.0.1"
+description = "Lunar pit segmentation with Mask R-CNN on LPA/Wagner ellipse labels"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "tqdm>=4.66",
+    "requests>=2.32",
+    "pvl>=1.3",
+    "spiceypy>=6.0",
+    "scipy>=1.11",
+    "opencv-python>=4.9",
+    "torch>=2.3",
+    "torchvision>=0.18",
+    "pycocotools>=2.0.7",
+]
+
+[tool.setuptools.packages.find]
+include = ["luna*"]
