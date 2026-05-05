@@ -29,30 +29,27 @@ import numpy as np
 def _affine_guess(
     corners_ll: np.ndarray, corners_uv: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Least-squares affine (lon,lat)->(u,v) and (u,v)->(lon,lat) from 4 corners."""
     lon = corners_ll[:, 0]
     lat = corners_ll[:, 1]
     M = np.stack([lon, lat, np.ones(4)], axis=1)
-    fwd, *_ = np.linalg.lstsq(M, corners_uv, rcond=None)  # (3, 2)
+    fwd, *_ = np.linalg.lstsq(M, corners_uv, rcond=None) 
     u = corners_uv[:, 0]
     v = corners_uv[:, 1]
     Muv = np.stack([u, v, np.ones(4)], axis=1)
-    inv, *_ = np.linalg.lstsq(Muv, corners_ll, rcond=None)  # (3, 2)
-    return fwd.T, inv.T  # each (2, 3)
+    inv, *_ = np.linalg.lstsq(Muv, corners_ll, rcond=None)
+    return fwd.T, inv.T
 
 
 @dataclass
 class LinearProjection:
     """Bilinear map between NAC pixel and lon/lat using the 4 INDEX corners."""
 
-    # Corner arrays, row order: UL, UR, LL, LR
-    lon_corners: np.ndarray  # shape (4,)
-    lat_corners: np.ndarray  # shape (4,)
+    lon_corners: np.ndarray 
+    lat_corners: np.ndarray  
     samples: int
     lines: int
-    # Cached affine for warm-starting the Newton solver.
-    _affine_fwd: np.ndarray  # (2, 3): (lon,lat,1) -> (u,v)
-    _affine_inv: np.ndarray  # (2, 3): (u,v,1) -> (lon,lat)
+    _affine_fwd: np.ndarray
+    _affine_inv: np.ndarray
 
     @classmethod
     def from_nac_geometry(
@@ -61,37 +58,50 @@ class LinearProjection:
         samples: Optional[int] = None,
         lines: Optional[int] = None,
     ) -> "LinearProjection":
-        W = int(samples if samples is not None else geom["line_samples"])
-        H = int(lines if lines is not None else geom["image_lines"])
-        lon_c = np.array([
-            geom["upper_left_longitude"],
-            geom["upper_right_longitude"],
-            geom["lower_left_longitude"],
-            geom["lower_right_longitude"],
-        ], dtype=np.float64)
-        lat_c = np.array([
-            geom["upper_left_latitude"],
-            geom["upper_right_latitude"],
-            geom["lower_left_latitude"],
-            geom["lower_right_latitude"],
-        ], dtype=np.float64)
+        raw_samples = samples if samples is not None else geom.get("line_samples")
+        raw_lines = lines if lines is not None else geom.get("image_lines")
+        
+        if raw_samples is None or raw_lines is None:
+            raise ValueError("Missing image dimensions (lines/samples) in geometry.")
+            
+        W = int(raw_samples)
+        H = int(raw_lines)
+        
+        try:
+            lon_c = np.array([
+                geom["upper_left_longitude"],
+                geom["upper_right_longitude"],
+                geom["lower_left_longitude"],
+                geom["lower_right_longitude"],
+            ], dtype=np.float64)
+            lat_c = np.array([
+                geom["upper_left_latitude"],
+                geom["upper_right_latitude"],
+                geom["lower_left_latitude"],
+                geom["lower_right_latitude"],
+            ], dtype=np.float64)
+        except (KeyError, TypeError) as e:
+            raise ValueError(f"Missing or invalid corner coordinates in geometry: {e}")
+
+        if np.isnan(lon_c).any() or np.isnan(lat_c).any():
+            raise ValueError("NaN values found in corner coordinates.")
+
         uv_c = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float64)
         ll_c = np.stack([lon_c, lat_c], axis=1)
+        
         fwd_affine, inv_affine = _affine_guess(ll_c, uv_c)
+        
         return cls(
             lon_corners=lon_c, lat_corners=lat_c,
             samples=W, lines=H,
             _affine_fwd=fwd_affine, _affine_inv=inv_affine,
         )
 
-    # -- forward (u,v)->(lon,lat) ---------------------------------------
-
     def _bilinear_ll(self, u: float, v: float) -> tuple[float, float]:
         w = np.array([(1 - u) * (1 - v), u * (1 - v), (1 - u) * v, u * v])
         return float(w @ self.lon_corners), float(w @ self.lat_corners)
 
     def _jacobian(self, u: float, v: float) -> np.ndarray:
-        # d(lon,lat)/d(u,v) at (u,v)
         dlon_du = (-(1 - v)) * self.lon_corners[0] + (1 - v) * self.lon_corners[1] + (-v) * self.lon_corners[2] + v * self.lon_corners[3]
         dlon_dv = (-(1 - u)) * self.lon_corners[0] + (-u) * self.lon_corners[1] + (1 - u) * self.lon_corners[2] + u * self.lon_corners[3]
         dlat_du = (-(1 - v)) * self.lat_corners[0] + (1 - v) * self.lat_corners[1] + (-v) * self.lat_corners[2] + v * self.lat_corners[3]
@@ -99,7 +109,6 @@ class LinearProjection:
         return np.array([[dlon_du, dlon_dv], [dlat_du, dlat_dv]])
 
     def _solve_uv(self, lon: float, lat: float, tol: float = 1e-9, max_iter: int = 20) -> tuple[float, float]:
-        # Affine warm start.
         uv = self._affine_fwd @ np.array([lon, lat, 1.0])
         u, v = float(uv[0]), float(uv[1])
         for _ in range(max_iter):

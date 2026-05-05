@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 .venv/
 .ipynb_checkpoints/
+.python-version
+*.ipynb
 
 # Large artifacts — never track
 data/
@@ -25,3 +27,10 @@ CLAUDE.md
 # OS
 Thumbs.db
 .DS_Store
+
+# For Test
+wrappers.py
+luna_hole_adapter/
+*qdrant*
+dino*
+temp/
