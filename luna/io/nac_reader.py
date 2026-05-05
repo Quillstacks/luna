@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
+import requests
 import numpy as np
 import pvl
 
@@ -26,6 +27,7 @@ import pvl
 _NULL = -32768
 _VALID_MINIMUM = -32752
 
+_QUICKMAP_NAC_SEARCH_ENDPOINT = "https://lroc-tiles.quickmap.io/fcgi-bin/fprovweb.exe"
 
 @dataclass
 class NACImage:
@@ -60,6 +62,72 @@ def _attach_geometry(img: NACImage, geom: dict) -> None:
         "lower_left": (geom.get("lower_left_longitude"), geom.get("lower_left_latitude")),
         "lower_right": (geom.get("lower_right_longitude"), geom.get("lower_right_latitude")),
     }
+
+def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
+    """Send a polygon footprint query to the QuickMap COGNAC16 service.
+
+    Parameters
+    ----------
+    spoly:
+        Flat, comma-separated coordinate string in the form
+        ``lon0,lat0,lon1,lat1,...,lon0,lat0`` (closed ring, longitude first).
+
+    Returns
+    -------
+    list[dict]
+        The ``"features"`` array from the QuickMap response.
+
+    Raises
+    ------
+    requests.HTTPError
+        If the service returns a non-2xx status code.
+    """
+    response = requests.get(
+        _QUICKMAP_NAC_SEARCH_ENDPOINT,
+        params={
+            "_xtype": "text/plain",
+            "dsource": "cognac16",
+            "spoly": spoly,
+            "bodyview": "lunar-lonlat",
+            "cmd_script": "searchpoly_v0",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()["features"]
+
+
+def get_nacs_from_polygon(
+    coords: list[tuple[float, float]],
+) -> list[dict[str, Any]]:
+    """Return QuickMap features intersecting an arbitrary polygon on the Moon.
+
+    Parameters
+    ----------
+    coords:
+        Sequence of ``(lon, lat)`` tuples defining the polygon vertices.
+        At least three points are required. The ring is closed automatically
+        if the first and last points differ.
+
+    Raises
+    ------
+    ValueError
+        If fewer than three coordinate pairs are supplied.
+
+    Examples
+    --------
+    >>> corners = [(351.0, -4.0), (352.0, -4.0), (352.0, -5.0), (351.0, -5.0)]
+    >>> features = get_nac_images_from_polygon(corners)
+    """
+    if len(coords) < 3:
+        raise ValueError(f"A polygon requires at least 3 points, got {len(coords)}.")
+
+    ring = list(coords)
+    if ring[0] != ring[-1]:
+        ring.append(ring[0])  # close the ring
+
+    spoly = ",".join(f"{lon},{lat}" for lon, lat in ring)
+    return _query_quickmap(spoly)
 
 
 def read_nac(path: str | Path, geometry: bool = False) -> NACImage:
