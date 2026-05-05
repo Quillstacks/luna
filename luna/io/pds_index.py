@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 log = logging.getLogger("luna.io.pds_index")
 
@@ -114,6 +116,20 @@ class PDSIndex:
         session: Optional[requests.Session] = None,
         archive: str = "CDR",
     ) -> None:
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Luna-PDS-Tool/1.0 (Academic/Research)"
+        })
+
+        retries = Retry(
+            total=3, 
+            backoff_factor=1, 
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD"]
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
         self.base_url = base_url.rstrip("/")
         self.archive = archive.upper()
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")

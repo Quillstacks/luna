@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+from .nac_reader import NACImage, read_nac
+from .pds_fetch import fetch_nac
 
 import numpy as np
 
@@ -121,6 +123,92 @@ class LinearProjection:
             u += du
             v += dv
         return u, v
+
+
+def get_image_of_roi(
+    product_id: str,
+    lat: float,
+    lon: float,
+    width: int = 256,
+    height: int = 256,
+) -> np.ndarray:
+    """Crop a region of interest from a NAC frame centred on a lon/lat point.
+
+    Fetches the NAC CDR from PDS if not cached locally, builds a bilinear
+    projection from the INDEX geometry, converts the target coordinate to pixel
+    space, and returns the surrounding ``width × height`` tile.
+
+    Pixels outside the image boundary are padded with ``NaN``.
+
+    Parameters
+    ----------
+    product_id:
+        LROC NAC product ID (e.g. ``"M102285549LE"``).
+    lat:
+        Geodetic latitude of the ROI centre in degrees (positive north).
+    lon:
+        Longitude of the ROI centre in degrees (positive east, 0–360).
+    width:
+        Tile width in pixels (default 256).
+    height:
+        Tile height in pixels (default 256).
+
+    Returns
+    -------
+    np.ndarray
+        Float32 array of shape ``(height, width)``.  Invalid / masked pixels
+        are ``NaN``.
+
+    Raises
+    ------
+    ValueError
+        If the projected pixel centre lies entirely outside the NAC frame.
+    """
+    path = fetch_nac(product_id, dest_dir="data/_scratch")
+    img: NACImage = read_nac(path, geometry=True)
+    proj = LinearProjection.from_nac_geometry(
+        img.geometry, samples=img.samples, lines=img.lines
+    )
+
+    u, v = proj._solve_uv(lon, lat)
+    col_f = u * (proj.samples - 1)
+    row_f = v * (proj.lines - 1)
+
+    col = int(np.floor(col_f))
+    row = int(np.floor(row_f))
+
+    if (
+        col < -width or col >= img.samples + width or
+        row < -height or row >= img.lines + height
+    ):
+        raise ValueError(
+            f"Coordinate (lat={lat}, lon={lon}) projects to ({col_f:.2f}, {row_f:.2f}), "
+            f"which is outside the NAC frame ({img.samples} × {img.lines} px)."
+        )
+
+    r0 = row - height // 2
+    c0 = col - width  // 2
+    r1 = r0 + height
+    c1 = c0 + width
+
+    # Clamp to image bounds and remember how much we clipped on each side.
+    r0_clamped = max(0, r0)
+    c0_clamped = max(0, c0)
+    r1_clamped = min(img.lines,   r1)
+    c1_clamped = min(img.samples, c1)
+
+    crop = img.pixels[r0_clamped:r1_clamped, c0_clamped:c1_clamped]
+
+    # Fast path: crop fits entirely inside the frame.
+    if crop.shape == (height, width):
+        return crop
+
+    # Slow path: pad edges that were clipped with NaN.
+    tile = np.full((height, width), np.nan, dtype=np.float32)
+    dst_r = r0_clamped - r0
+    dst_c = c0_clamped - c0
+    tile[dst_r : dst_r + crop.shape[0], dst_c : dst_c + crop.shape[1]] = crop
+    return tile
 
 
 def lonlat_to_pixel(proj: LinearProjection, lon: float, lat: float) -> tuple[int, int]:
