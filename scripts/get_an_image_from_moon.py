@@ -1,46 +1,81 @@
 import matplotlib.pyplot as plt
+import numpy as np
 from luna.io.projection import get_image_of_roi
-from luna.io.nac_reader import get_nacs_from_polygon # Adjust import path if needed
+from luna.io.nac_reader import get_nacs_from_polygon
+from luna.io.pds_index import PDSIndex
 
-# Target ROI center
-target_lat = -4.53220
-target_lon = 351.48930
+TARGET_LAT, TARGET_LON = 45.62482, 331.18992
+WIDTH, HEIGHT = 1024, 1024
+EPSILON = 0.01 
 
-# 1. Create a tiny bounding box polygon around our target to query QuickMap
-epsilon = 0.01 # Roughly ~300 meters at the equator
 corners = [
-    (target_lon - epsilon, target_lat + epsilon),
-    (target_lon + epsilon, target_lat + epsilon),
-    (target_lon + epsilon, target_lat - epsilon),
-    (target_lon - epsilon, target_lat - epsilon)
+    (TARGET_LON - EPSILON, TARGET_LAT + EPSILON),
+    (TARGET_LON + EPSILON, TARGET_LAT + EPSILON),
+    (TARGET_LON + EPSILON, TARGET_LAT - EPSILON),
+    (TARGET_LON - EPSILON, TARGET_LAT - EPSILON)
 ]
-
-print("Searching QuickMap for NAC images in this region...")
 features = get_nacs_from_polygon(corners)
 
 if not features:
-    raise ValueError("No NAC images found overlapping this location!")
+    raise ValueError("No NAC images found.")
 
-# 2. Extract the Product ID from the first result
-# QuickMap returns GeoJSON-like features, so the ID is usually in the properties.
-PRODUCT_ID = features[0]["properties"]["label"]
-print(f"Found image: {PRODUCT_ID}")
+# Sort features by quality: lowest Resolution first, then lowest Incidence
+sorted_features = sorted(features, key=lambda f: (
+    f["properties"]["attributes"]["Resolution"], 
+    f["properties"]["attributes"]["Incidence"]
+))
 
-# 3. Fetch, project, and crop the tile
-print("Fetching and projecting image tile...")
-tile = get_image_of_roi(PRODUCT_ID, lat=target_lat, lon=target_lon, width=1024, height=1024)
+pds = PDSIndex()
+selected_id = None
+selected_attr = None
 
-# 4. Plot!
-plt.figure(figsize=(6, 6))
+print("Filtering for the best image with valid geometry...")
+for feat in sorted_features:
+    pid = feat["properties"]["label"]
+    try:
+        geom = pds.geometry_for(pid)
+        
+        corner_keys = [
+            "upper_left_longitude", "upper_right_longitude",
+            "lower_left_longitude", "lower_right_longitude",
+            "upper_left_latitude",  "upper_right_latitude",
+            "lower_left_latitude",  "lower_right_latitude"
+        ]
+        
+        # FIX: Explicitly cast to float to handle PVL objects/strings
+        coords = []
+        for k in corner_keys:
+            val = geom.get(k, np.nan)
+            try:
+                coords.append(float(getattr(val, "value", val)))
+            except (TypeError, ValueError):
+                coords.append(np.nan)
 
-# The valid image data will be gray/light gray. 
+        if np.isnan(coords).any():
+            print(f"  Skipping {pid}: Invalid geometry (NaN corners).")
+            continue
+            
+        selected_id = pid
+        selected_attr = feat["properties"]["attributes"]
+        break 
+        
+    except Exception as e:
+        print(f"  Skipping {pid}: {e}")
+
+if not selected_id:
+    raise ValueError("None of the available images have valid geometry data.")
+
+print(f"Selected Valid Image: {selected_id}")
+print(f" - Resolution: {selected_attr['Resolution']} m/px")
+print(f" - Incidence Angle: {selected_attr['Incidence']}°")
+
+print("Fetching ROI...")
+tile = get_image_of_roi(selected_id, lat=TARGET_LAT, lon=TARGET_LON, width=WIDTH, height=HEIGHT)
+
+plt.figure(figsize=(8, 8))
 plt.imshow(tile, cmap='gray', origin='upper')
-
-plt.title(f"LROC NAC ROI ({PRODUCT_ID})\nCentered at Lat: {target_lat}, Lon: {target_lon}")
-plt.colorbar(label="Pixel Intensity")
-
-# Make any NaNs visually pop out as salmon
+plt.title(f"LROC NAC ROI: {selected_id}\n{selected_attr['Resolution']}m/px, {selected_attr['Incidence']}° Inc")
+plt.colorbar(label="I/F Reflectance")
 plt.gca().set_facecolor('xkcd:salmon') 
-
 plt.tight_layout()
 plt.show()

@@ -192,12 +192,15 @@ def get_image_of_roi(
     c1 = c0 + width
 
     # Clamp to image bounds and remember how much we clipped on each side.
-    r0_clamped = max(0, r0)
-    c0_clamped = max(0, c0)
-    r1_clamped = min(img.lines,   r1)
-    c1_clamped = min(img.samples, c1)
+    r0_clamped = int(np.clip(r0, 0, img.lines))
+    c0_clamped = int(np.clip(c0, 0, img.samples))
+    r1_clamped = int(np.clip(r1, 0, img.lines))
+    c1_clamped = int(np.clip(c1, 0, img.samples))
 
     crop = img.pixels[r0_clamped:r1_clamped, c0_clamped:c1_clamped]
+
+    if crop.size == 0:
+        return np.full((height, width), np.nan, dtype=np.float32)
 
     # Fast path: crop fits entirely inside the frame.
     if crop.shape == (height, width):

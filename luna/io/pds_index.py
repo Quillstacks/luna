@@ -122,10 +122,11 @@ class PDSIndex:
         })
 
         retries = Retry(
-            total=3, 
+            total=5, 
             backoff_factor=1, 
             status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET", "HEAD"]
+            allowed_methods=["GET", "HEAD"],
+            raise_on_status=False
         )
         adapter = HTTPAdapter(max_retries=retries)
         self.session.mount('http://', adapter)
