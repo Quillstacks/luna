@@ -18,14 +18,74 @@ next training round.
                           human relabel -> next training round
 ```
 
+## ESSA baseline (Le Corre et al. 2025)
+
+Before training anything, validate the inference path against the published
+model. ESSA is a `maskrcnn_resnet50_fpn_v2` with 3 classes (bg / skylight /
+pit). We do **not** reimplement preprocessing — we run Le Corre's vendored
+ISIS3 bash pipeline under [`third_party/`](third_party/) so the bytes ESSA
+sees match what it was trained on (radiometric calibration, echo correction,
+equirectangular cam2map, cubic-spline downsample to 1.5 m/px).
+
+### One-time setup
+
+```bash
+# Project deps (torch, rasterio, ...). Inside your usual venv/conda env.
+pip install -e .
+
+# ISIS3 + GDAL — separate conda env, ~3 GB.
+# Apple Silicon (arm64) needs the osx-64 subdir; ISIS has no native arm64 build:
+CONDA_SUBDIR=osx-64 conda env create -f environments/isis.yml
+# Intel Mac / Linux: just `conda env create -f environments/isis.yml`.
+
+# ESSA weights from Zenodo (~552 MB, md5-verified).
+python scripts/fetch_essa_weights.py
+```
+
+### One pipeline, two modes
+
+```bash
+# Smoke test: reproduce MTP detection (LPA id=3 is the gold-standard
+# target — paper hits >0.999 on every NAC). 4 tiles around the catalog
+# point, ~5 min on CPU.
+python scripts/essa_smoke.py
+
+# Full-strip discovery sweep. Slides 2048-px tiles with 50% overlap
+# across the whole NAC, dedupes across boundaries. Optional --validate
+# checks recall on a known target inside the frame.
+python scripts/essa_smoke.py --mode full-strip \
+    --product-id M1243133690L \
+    --validate-lon 87.599 --validate-lat 58.6979 --label BAP
+```
+
+Both modes produce the same artefacts under `data/essa_out/<label>/`:
+- `overview.png` — full strip with all detection bboxes drawn
+- `crops/det_NNN.png` — adaptive crop per detection with bbox + mask outline + scale bar
+- `detections.json` — class, score, bbox, centroid, lon/lat (lunar geographic), validation summary
+
+The pipeline: `PDSIndex(archive="EDR")` resolves URL → fetch `.IMG` → ISIS3 bash
+chain (`lronac2isis → spiceinit → lronaccal → lronacecho → cam2map →
+gdal_translate → cubic-spline downscale`) via `conda run -n luna-isis` →
+projected GeoTIFF (equirectangular CRS embedded) → tile → ESSA inline.
+Pixel ↔ lon/lat uses the GeoTIFF's CRS only (no bilinear shortcut).
+
+### Vendored upstream
+
+[`third_party/`](third_party/) is a read-only snapshot of four Le Corre
+repos: ESSA inference, PITS depth-from-shadow (Pass-2 candidate
+verification), IMFMapper (impact-melt-fracture FP filter), and the bash
+preprocessing pipeline. See [`third_party/README.md`](third_party/README.md)
+for licenses + attribution. Weights live at
+<https://doi.org/10.5281/zenodo.15438463> (CC BY 4.0). Cite Le Corre et al.
+(2025) *Icarus* 441:116675 if you publish anything downstream.
+
 ## Main loop
 
 1. **Build pseudo-label crops.** `scripts/build_ellipse_dataset.py` streams
    every (pit, NAC) pair in `catalogs/pit_nacs.json`, decodes the CDR, projects
-   the LPA lon/lat to pixels (SPICE when kernels are available, bilinear-from-
-   INDEX-corners fallback), rasterises an ellipse from the catalog dimensions,
-   saves a 1024-px crop + COCO annotation, and deletes the `.IMG`. Output goes
-   to `data/ellipse_ds/`.
+   the LPA lon/lat to pixels via SPICE (`luna.io.spice_project.ground_to_image`),
+   rasterises an ellipse from the catalog dimensions, saves a 1024-px crop +
+   COCO annotation, and deletes the `.IMG`. Output goes to `data/ellipse_ds/`.
 2. **Hand-label.** `scripts/label_pits.py` opens each crop in a tkinter tool
    with the projected center marked as a subtle cross (it's a hint — see
    *Catalog accuracy* below). Draw a polygon, press Enter for next, `A` to
@@ -97,21 +157,27 @@ python scripts/label_pits.py
 python scripts/monthly_pds_sweep.py --dry-run
 ```
 
-## Projection: SPICE vs. bilinear
+## Projection
 
 LROC NAC is a pushbroom camera — the across-track coord of a ground point is a
 function of spacecraft attitude at the time that pixel was exposed, not a
-plane mapping. `luna/io/spice_project.py` implements the full SPICE inversion
-(pure Python, `spiceypy`) and is the default.
+plane mapping. There is **one** projection path in this repo: full SPICE
+inversion via `luna.io.spice_project.ground_to_image` (pure Python,
+`spiceypy`). The earlier 4-corner bilinear shortcut was deleted because it
+breaks at high latitude (you can lose tens of km of accuracy at 60°N).
+
+Two ways the SPICE projection gets used:
+- **Raw EDR / CDR pixels** — call `ground_to_image(label_path, lon, lat)`
+  directly with the `.IMG` PVL label. Used by `scripts/build_ellipse_dataset.py`,
+  `scripts/predict_nac.py`, and the `build_projection_oracle.py` ground-truth
+  generator.
+- **After ISIS `cam2map`** — the resulting GeoTIFF carries an equirectangular
+  CRS in its header. `essa_smoke.py` uses that CRS via `rasterio.warp.transform`
+  for everything pixel↔lonlat — no extra SPICE call needed.
 
 Kernels are fetched on demand from the NAIF archive by
-`luna.io.kernel_fetch.ensure_kernels_for_date`: each NAC's year metakernel is
-parsed, filtered to entries whose time window contains the exposure, and the
-missing files are pulled in parallel. **Cold fetch is ~1–2 GB per observation
-year**, cached under `data/spice/lro/`. Subsequent NACs in the same window
-are cache hits. If NAIF is down or the fetch errors, the builder silently
-falls back to the INDEX.TAB 4-corner bilinear map and logs `projection =
-"bilinear"` in the COCO record.
+`luna.io.kernel_fetch.ensure_kernels_for_date`. **Cold fetch is ~1–2 GB per
+observation year**, cached under `data/spice/lro/`.
 
 ## Catalog accuracy caveat
 
@@ -123,8 +189,8 @@ Always trust the visible pit shadow over the marker.
 
 ## Layout
 
-- `luna/io/` — PDS resolver (INDEX.TAB range reads), NAC CDR reader, SPICE
-  projection, kernel fetcher, bilinear fallback
+- `luna/io/` — PDS resolver (INDEX.TAB range reads), NAC CDR/EDR reader, SPICE
+  projection, kernel fetcher
 - `luna/labels/` — LPA CSV loader, ellipse mask rasteriser
 - `luna/models/` — torchvision Mask R-CNN wiring + COCO dataset
 - `catalogs/lpa.csv` — ASU Lunar Pit Atlas snapshot (278 pits)

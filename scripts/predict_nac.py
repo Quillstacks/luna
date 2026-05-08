@@ -34,7 +34,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from luna.io import LinearProjection, fetch_nac, pixel_to_lonlat, read_nac
+from luna.io import fetch_nac, image_to_ground, read_nac
 from luna.models import build_maskrcnn
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,7 +90,6 @@ def main() -> int:
 
     img_path = fetch_nac(args.product_id, dest_dir=args.scratch)
     nac = read_nac(img_path, geometry=True)
-    proj = LinearProjection.from_nac_geometry(nac.geometry, samples=nac.samples, lines=nac.lines)
     log.info("decoded %s  %d lines × %d samples  res=%.3f m/px",
              nac.product_id, nac.lines, nac.samples, nac.resolution_m or 0.0)
 
@@ -128,7 +127,7 @@ def main() -> int:
                 ys, xs = np.where(m)
                 cx = float(xs.mean()) + x0
                 cy = float(ys.mean()) + y0
-                lon, lat = pixel_to_lonlat(proj, int(round(cx)), int(round(cy)))
+                lon, lat = image_to_ground(img_path, cx, cy)
                 dets.append({
                     "score": float(s),
                     "center_px": (cx, cy),
