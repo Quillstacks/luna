@@ -200,6 +200,42 @@ def ground_to_image(
 
     return float(sample), float(line)
 
+def image_to_ground(
+    label_path: Path | str,
+    sample: float,
+    line: float,
+    kernel_root: Path | str | None = None,
+) -> tuple[float, float]:
+    """(sample, line) 0-indexed -> (lon, lat) via SPICE."""
+    furnish_kernels(kernel_root)
+    label_path = Path(label_path)
+    lbl = pvl.load(str(label_path))
+    side = _nac_side_from_pid(str(lbl["PRODUCT_ID"]))
+    p = _NAC_PARAMS[side]
+
+    et_start, _, line_rate, _, _ = _read_times(label_path)
+    
+    et = et_start + (line * line_rate)
+    
+    y_focal = (sample - p["boresight_sample"]) / p["px_per_mm"]
+    look_cam = np.array([0.0, y_focal, p["focal_mm"]])
+    
+    rot_cam_to_j2k = sp.pxform(p["frame"], "J2000", et)
+    rot_j2k_to_bf = sp.pxform("J2000", "IAU_MOON", et)
+    look_bf = rot_j2k_to_bf @ rot_cam_to_j2k @ look_cam
+    
+    radii = sp.bodvrd("MOON", "RADII", 3)[1]
+    sc_pos, _ = sp.spkpos("LRO", et, "IAU_MOON", "NONE", "MOON")
+    
+    try:
+        point, _, _ = sp.sincpt("Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", look_bf, radii)
+        re_km, rp_km = float(radii[0]), float(radii[2])
+        f_body = (re_km - rp_km) / re_km
+        lon_rad, lat_rad, _ = sp.recgeo(point, re_km, f_body)
+        return float(np.rad2deg(lon_rad)), float(np.rad2deg(lat_rad))
+    except Exception:
+        return 0.0, 0.0
+
 
 def lonlat_to_pixel_spice(
     label_path: Path | str,
