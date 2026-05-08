@@ -21,5 +21,24 @@ dependencies = [
     "pycocotools>=2.0.7",
 ]
 
+[project.optional-dependencies]
+# Phase 5 of the GPU projection plan: fused Triton kernel for ground_to_image.
+# Linux/aarch64 + CUDA only — Spark (GB10) qualifies; macOS does not.
+gpu = [
+    "triton>=3.0; platform_system == 'Linux'",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-xdist>=3.5",
+]
+
 [tool.setuptools.packages.find]
 include = ["luna*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "gpu: requires CUDA device (skipped on CPU-only hosts)",
+    "spice: requires SPICE kernels under data/spice/lro (skipped if absent)",
+]
