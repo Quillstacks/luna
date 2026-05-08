@@ -35,7 +35,7 @@ import numpy as np
 from PIL import Image
 from pycocotools import mask as mask_utils
 
-from luna.io import LinearProjection, PDSIndex, fetch_nac, lonlat_to_pixel, read_nac
+from luna.io import PDSIndex, fetch_nac, read_nac
 from luna.io.spice_project import ensure_kernels_for_label, ground_to_image
 from luna.labels import pit_mask_from_lpa, read_lpa_csv
 
@@ -149,23 +149,13 @@ def main() -> int:
                 img_path.unlink(missing_ok=True)
             continue
 
-        # SPICE projection is pixel-accurate from the camera model; the only
-        # remaining uncertainty is the LPA catalog lon/lat, which is ~50–100 m
-        # off for minor pits. We use the SPICE pixel as a "start looking here"
-        # hint and let the hand-labeling tool take it from there.
-        # Always compute the bilinear fallback first so we can degrade if the
-        # kernel fetch fails for some date (e.g., NAIF downtime).
-        proj = LinearProjection.from_nac_geometry(nac.geometry, samples=nac.samples, lines=nac.lines)
-        px_bl, py_bl = lonlat_to_pixel(proj, entry.longitude, entry.latitude)
-        proj_source = "bilinear"
-        px, py = px_bl, py_bl
-        try:
-            ensure_kernels_for_label(img_path)
-            s, l = ground_to_image(img_path, entry.longitude, entry.latitude)
-            px, py = int(round(s)), int(round(l))
-            proj_source = "spice"
-        except Exception as e:  # noqa: BLE001
-            log.warning("SPICE failed for %s/%s (%s); fell back to bilinear", pit_id, product, e)
+        # SPICE is the only projection — pixel-accurate from the camera model.
+        # Catalog lon/lat is the only remaining source of error (~50–100 m for
+        # minor pits). The hand-labeling tool refines from there.
+        ensure_kernels_for_label(img_path)
+        s, l = ground_to_image(img_path, entry.longitude, entry.latitude)
+        px, py = int(round(s)), int(round(l))
+        proj_source = "spice"
 
         # Skip if the ellipse is too big to fit inside the chosen crop.
         res = nac.resolution_m or 1.0
@@ -222,8 +212,7 @@ def main() -> int:
             "product_id": product,
             "resolution_m": float(res),
             "origin_xy": [int(x0), int(y0)],
-            "lon_corners": [float(v) for v in proj.lon_corners],
-            "lat_corners": [float(v) for v in proj.lat_corners],
+            "footprint": nac.footprint,
             "nac_samples": int(nac.samples), "nac_lines": int(nac.lines),
             "center_px_hint": [int(px), int(py)],
             "projection": proj_source,

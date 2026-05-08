@@ -16,12 +16,14 @@ from PIL import Image
 from pycocotools.coco import COCO
 from pycocotools import mask as mask_utils
 from torch.utils.data import Dataset
+from torchvision.models import ResNet50_Weights
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 
 
 NUM_CLASSES_DEFAULT = 2  # background + pit
+ESSA_NUM_CLASSES = 3     # background + skylight + pit (Le Corre et al. 2025)
 
 
 def build_maskrcnn(num_classes: int = NUM_CLASSES_DEFAULT, pretrained: bool = True) -> torch.nn.Module:
@@ -35,6 +37,33 @@ def build_maskrcnn(num_classes: int = NUM_CLASSES_DEFAULT, pretrained: bool = Tr
     in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
     hidden = 256
     model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden, num_classes)
+    return model
+
+
+def build_essa_model(checkpoint: Optional[str | Path] = None,
+                     map_location: str = "cpu") -> torch.nn.Module:
+    """Mask R-CNN wired to match Le Corre et al. (2025) ESSA exactly.
+
+    Reproduces the construction in dlecorre387/Entrances-to-Sub-Surface-Areas
+    so the published checkpoint loads without key mismatches:
+        - ImageNet1K_V2 ResNet50 backbone, all 5 stages trainable
+        - box_predictor swapped to 3 classes (bg + skylight + pit)
+        - mask_predictor left at torchvision default (91-class output);
+          only the channels for class 1/2 are ever indexed at inference
+
+    The Zenodo checkpoint is a dict ``{"model_state_dict": ..., ...}``.
+    """
+    model = maskrcnn_resnet50_fpn_v2(
+        weights_backbone=ResNet50_Weights.IMAGENET1K_V2,
+        trainable_backbone_layers=5,
+    )
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, ESSA_NUM_CLASSES)
+
+    if checkpoint is not None:
+        state = torch.load(str(checkpoint), map_location=map_location)
+        sd = state.get("model_state_dict", state) if isinstance(state, dict) else state
+        model.load_state_dict(sd)
     return model
 
 
