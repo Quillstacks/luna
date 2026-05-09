@@ -4,7 +4,7 @@ from luna.io.projection import get_image_of_roi
 from luna.io.nac_reader import get_nacs_from_polygon
 from luna.io.pds_index import PDSIndex
 
-TARGET_LAT, TARGET_LON = 45.62482, 331.18992
+TARGET_LAT, TARGET_LON = 23.39629, 312.45872
 WIDTH, HEIGHT = 1024, 1024
 EPSILON = 0.01 
 
