@@ -34,3 +34,6 @@ luna_hole_adapter/
 *qdrant*
 dino*
 temp/
+*darwin.so
+*.o
+*.cpp
