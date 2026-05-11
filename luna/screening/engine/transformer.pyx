@@ -34,6 +34,7 @@ cdef extern from *:
 
 DEF TILE_SIZE     = 256
 DEF PDS3_OFFSET   = 5064     # PDS3 header size in bytes
+DEF STRIDE        = 192      # Overlap
 DEF LROC_VALID_MIN = -32752  # LROC sensor: everything below is null or saturation artifact
 
 
@@ -120,8 +121,8 @@ cdef class NACTransformer:
         cdef int16_t* img_data = <int16_t*>(slot.raw_ptr + PDS3_OFFSET)
 
         cdef uint32_t x, y
-        for y in range(0, slot.height - TILE_SIZE + 1, TILE_SIZE):
-            for x in range(0, slot.width - TILE_SIZE + 1, TILE_SIZE):
+        for y in range(0, slot.height - TILE_SIZE + 1, STRIDE):
+            for x in range(0, slot.width - TILE_SIZE + 1, STRIDE):
                 self._norm_and_feed(img_data, slot.width, x, y)
 
                 if self.batch.current_tiles >= self.batch.max_tiles:
