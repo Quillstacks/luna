@@ -99,8 +99,6 @@ cdef class NACTransformer:
         cdef uint64_t available_cursor
         cdef uint64_t seq
 
-        print(f"[Consumer {self.consumer_id}] Started. Waiting for data...")
-
         with nogil:
             while self.is_running.load() == 1:
                 available_cursor = self.engine.cursor.value.load()

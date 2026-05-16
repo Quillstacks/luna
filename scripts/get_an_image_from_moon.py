@@ -1,11 +1,14 @@
 import matplotlib.pyplot as plt
 import numpy as np
+import logging
 from luna.io.projection import get_image_of_roi
 from luna.io.nac_reader import get_nacs_from_polygon
 from luna.io.pds_index import PDSIndex
 
-TARGET_LAT, TARGET_LON = 23.39629, 312.45872
-WIDTH, HEIGHT = 1024, 1024
+log = logging.getLogger(__name__)
+
+TARGET_LAT, TARGET_LON = 33.66382, .72254
+WIDTH, HEIGHT = 512, 512
 EPSILON = 0.01 
 
 corners = [
@@ -29,7 +32,7 @@ pds = PDSIndex()
 selected_id = None
 selected_attr = None
 
-print("Filtering for the best image with valid geometry...")
+log.info("Filtering for the best image with valid geometry...")
 for feat in sorted_features:
     pid = feat["properties"]["label"]
     try:
@@ -52,7 +55,7 @@ for feat in sorted_features:
                 coords.append(np.nan)
 
         if np.isnan(coords).any():
-            print(f"  Skipping {pid}: Invalid geometry (NaN corners).")
+            log.info(f"  Skipping {pid}: Invalid geometry (NaN corners).")
             continue
             
         selected_id = pid
@@ -60,16 +63,16 @@ for feat in sorted_features:
         break 
         
     except Exception as e:
-        print(f"  Skipping {pid}: {e}")
+        log.warning(f"  Skipping {pid}: {e}")
 
 if not selected_id:
     raise ValueError("None of the available images have valid geometry data.")
 
-print(f"Selected Valid Image: {selected_id}")
-print(f" - Resolution: {selected_attr['Resolution']} m/px")
-print(f" - Incidence Angle: {selected_attr['Incidence']}°")
+log.info(f"Selected Valid Image: {selected_id}")
+log.info(f" - Resolution: {selected_attr['Resolution']} m/px")
+log.info(f" - Incidence Angle: {selected_attr['Incidence']}°")
 
-print("Fetching ROI...")
+log.info("Fetching ROI...")
 tile = get_image_of_roi(selected_id, lat=TARGET_LAT, lon=TARGET_LON, width=WIDTH, height=HEIGHT)
 
 plt.figure(figsize=(8, 8))

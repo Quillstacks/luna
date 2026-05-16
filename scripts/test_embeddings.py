@@ -1,3 +1,4 @@
+import json
 import logging
 import rasterio
 import numpy as np
@@ -6,17 +7,12 @@ from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
 
 from luna.models.dinov3 import DINOEncoder
-from luna.utils import LunaNormalizer
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("luna.scripts.test_embeddings")
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-HF_REPO_ID       = "F1nnSBK/lunar-dinov3-lora"
-DINO_DIM         = 384
+HF_REPO_ID        = "F1nnSBK/lunar-dinov3-lora"
+DINO_DIM          = 384
 SAMPLES_PER_CLASS = 3
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,9 +26,23 @@ DINO_DEVICE = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _load_stats(stats_path: Path) -> dict:
+    if stats_path.exists():
+        with open(stats_path) as f:
+            return json.load(f)
+    log.warning("Stats file %s not found. Using local normalization.", stats_path)
+    return {}
+
+
+def _normalize(arr: np.ndarray, path: Path, stats: dict) -> np.ndarray:
+    nac_id = path.stem.split("_")[-1]
+    if nac_id in stats:
+        lo, hi = stats[nac_id]["min"], stats[nac_id]["max"]
+    else:
+        lo, hi = arr.min(), arr.max()
+        log.debug("NAC %s unknown, using local min/max", nac_id)
+    return np.clip((arr - lo) / (hi - lo + 1e-6), 0, 1)
+
 
 def load_array(path: Path) -> np.ndarray:
     if path.suffix.lower() in {".tif", ".tiff"}:
@@ -41,41 +51,26 @@ def load_array(path: Path) -> np.ndarray:
     return np.load(path).astype(np.float32)
 
 
-def embed_files(
-    paths: list[Path],
-    encoder: DINOEncoder,
-    normalizer: LunaNormalizer,
-) -> np.ndarray:
+def embed_files(paths: list[Path], encoder: DINOEncoder, stats: dict) -> np.ndarray:
     vectors = []
     for path in paths:
-        arr  = load_array(path)
-        arr  = normalizer.normalize(arr, path)
-        vec  = encoder.encode(np.expand_dims(arr, axis=0))
+        arr = _normalize(load_array(path), path, stats)
+        vec = encoder.encode(np.expand_dims(arr, axis=0))
         vectors.append(vec[0])
         log.debug("Embedded %s → %s", path.name, vec.shape)
     return np.array(vectors)
 
 
-def print_similarity_matrix(
-    sim_matrix: np.ndarray,
-    labels: list[str],
-    paths: list[Path],
-) -> None:
+def print_similarity_matrix(sim_matrix: np.ndarray, labels: list[str], paths: list[Path]) -> None:
     short_labels = [f"{l[:3]}{i}" for i, l in enumerate(labels)]
     header       = f"{'':>25} | " + " | ".join(short_labels)
-
     log.info("\n--- COSINE SIMILARITY MATRIX ---")
     log.info(header)
     log.info("-" * len(header))
-
     for i, (label, path) in enumerate(zip(labels, paths)):
         row = " | ".join(f"{v:5.2f}" for v in sim_matrix[i])
         log.info("%3s | %20s | %s", label, path.name[:20], row)
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     pit_files = list((SCRATCH_DIR / "pits").glob("*.npy"))[:SAMPLES_PER_CLASS]
@@ -89,15 +84,15 @@ def main() -> None:
     labels    = ["PIT"] * len(pit_files) + ["NEG"] * len(neg_files)
     log.info("Embedding test: %d pits, %d negatives", len(pit_files), len(neg_files))
 
-    normalizer = LunaNormalizer(STATS_FILE)
-    encoder    = DINOEncoder(
+    stats   = _load_stats(STATS_FILE)
+    encoder = DINOEncoder(
         lora_dir          = HF_REPO_ID,
         base_weights_path = HF_REPO_ID,
         matryoshka_dim    = DINO_DIM,
         device            = DINO_DEVICE,
     )
 
-    embeddings = embed_files(all_files, encoder, normalizer)
+    embeddings = embed_files(all_files, encoder, stats)
     del encoder
 
     sim_matrix = cosine_similarity(embeddings)
