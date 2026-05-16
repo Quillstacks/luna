@@ -4,9 +4,10 @@
 # cython: wraparound=False
 # cython: cdivision=True
 
-from libc.stdint cimport uint8_t, uint16_t, uint32_t, uint64_t, int16_t, int32_t
+from libc.stdint cimport uint8_t, uint32_t, uint64_t, int16_t, int32_t
 from libc.stdlib cimport malloc, free
 from libcpp.atomic cimport atomic
+from libc.string cimport memcpy
 from luna.screening.engine.disruptor cimport DisruptorEngine, NACSlot
 import numpy as np
 
@@ -40,6 +41,7 @@ DEF LROC_VALID_MIN = -32752  # LROC sensor: everything below is null or saturati
 
 cdef struct GPUFeederBatch:
     uint8_t* tensor_data      # Contiguous UINT8 buffer for PyTorch [B, 1, H, W]
+    int32_t* tile_offsets
     int      current_tiles
     int      max_tiles
 
@@ -76,6 +78,7 @@ cdef class NACTransformer:
         )
         if not self.batch.tensor_data:
             raise MemoryError("Failed to allocate GPU feeder buffer.")
+        self.batch.tile_offsets = <int32_t*>malloc(max_batch_size * 2 * sizeof(int32_t))
 
     def stop(self):
         self.is_running.store(0)
@@ -83,6 +86,8 @@ cdef class NACTransformer:
     def __dealloc__(self):
         if self.batch.tensor_data is not NULL:
             free(self.batch.tensor_data)
+        if self.batch.tile_offsets is not NULL:
+            free(self.batch.tile_offsets)
 
     # ── Main loop (GIL-free) ──────────────────────────────────────────────────
 
@@ -128,12 +133,15 @@ cdef class NACTransformer:
                 if self.batch.current_tiles >= self.batch.max_tiles:
                     self._flush_to_gpu()
 
+        if self.batch.current_tiles > 0:
+            self._flush_to_gpu()
+
     cdef void _norm_and_feed(
         self,
         int16_t*  raw_image,
         uint32_t  img_width,
         uint32_t  start_x,
-        uint32_t  start_y,
+        uint32_t  start_y
     ) noexcept nogil:
         """
         BLOCK 1 & 2 — TILING + NORMALIZATION
@@ -141,58 +149,73 @@ cdef class NACTransformer:
         computes a local min/max (excluding LROC invalid pixels),
         and writes contrast-stretched UINT8 values into the feeder buffer.
         """
-        cdef int     tx, ty
-        cdef int32_t pixel
-        cdef int32_t min_val  =  32767   # INT16_MAX
-        cdef int32_t max_val  = -32768   # INT16_MIN
-        cdef uint64_t src_idx
-
-        cdef uint8_t* batch_ptr = (
+        cdef int        tx, ty
+        cdef int32_t    pixel
+        cdef uint64_t   src_idx
+        cdef uint8_t*   batch_ptr = (
             self.batch.tensor_data + self.batch.current_tiles * TILE_SIZE * TILE_SIZE
         )
+        cdef int16_t local_min = 32767
+        cdef int16_t local_max = -32768
 
-        # Pass 1 — local statistics, ignoring LROC null/saturation values
         for ty in range(TILE_SIZE):
             for tx in range(TILE_SIZE):
                 src_idx = (start_y + ty) * img_width + (start_x + tx)
                 pixel   = raw_image[src_idx]
+
                 if pixel >= LROC_VALID_MIN:
-                    if pixel < min_val: min_val = pixel
-                    if pixel > max_val: max_val = pixel
+                    if pixel < local_min: local_min = pixel
+                    if pixel > local_max: local_max = pixel
 
-        # Edge case: entire tile consists of invalid pixels
-        if min_val > max_val:
-            min_val = 0
-            max_val = 1
-
-        # Pass 2 — contrast stretch to UINT8
-        cdef int32_t diff = max_val - min_val
-        if diff <= 0:
-            diff = 1
-
+        if local_max < local_min:
+            local_min = 0
+            local_max = 1
+            
+        cdef float diff = <float>(local_max - local_min)
+        if diff < 1e-6: 
+            diff = 1.0
+            
         cdef int dst_idx = 0
+        cdef float normalized
+
         for ty in range(TILE_SIZE):
             for tx in range(TILE_SIZE):
                 src_idx = (start_y + ty) * img_width + (start_x + tx)
                 pixel   = raw_image[src_idx]
 
                 if pixel < LROC_VALID_MIN:
-                    batch_ptr[dst_idx] = 0  # Map invalid pixels to black
+                    batch_ptr[dst_idx] = 0
                 else:
-                    batch_ptr[dst_idx] = <uint8_t>((pixel - min_val) * 255 / diff)
+                    normalized = (pixel - local_min) / diff
+                    if normalized < 0.0: normalized = 0.0
+                    if normalized > 1.0: normalized = 1.0
+                    batch_ptr[dst_idx] = <uint8_t>(normalized * 255.0)
 
                 dst_idx += 1
+
+        self.batch.tile_offsets[self.batch.current_tiles * 2] = <int32_t>start_x
+        self.batch.tile_offsets[self.batch.current_tiles * 2 + 1] = <int32_t>start_y
 
         self.batch.current_tiles += 1
 
     # ── Python bridge ─────────────────────────────────────────────────────────
 
-    def get_current_batch(self):
+    def get_current_batch_with_offsets(self):
         cdef int n = self.batch.current_tiles if self.batch.current_tiles > 0 else self.batch.max_tiles
 
-        cdef Py_ssize_t size = n * TILE_SIZE * TILE_SIZE
-        arr = np.frombuffer(self.batch.tensor_data[:size], dtype=np.uint8).reshape((n, TILE_SIZE, TILE_SIZE))
-        return arr.copy()
+        img_arr = np.empty((n, TILE_SIZE, TILE_SIZE), dtype=np.uint8)
+        offset_arr = np.empty((n, 2), dtype=np.int32)
+
+        cdef uint8_t[:, :, ::1] img_view = img_arr
+        cdef int32_t[:, ::1] offset_view = offset_arr
+
+        cdef Py_ssize_t img_bytes = n * TILE_SIZE * TILE_SIZE * sizeof(uint8_t)
+        memcpy(&img_view[0, 0, 0], self.batch.tensor_data, img_bytes)
+
+        cdef Py_ssize_t offset_bytes = n * 2 * sizeof(int32_t)
+        memcpy(&offset_view[0, 0], self.batch.tile_offsets, offset_bytes)
+
+        return img_arr, offset_arr
 
     @property
     def is_batch_ready(self):

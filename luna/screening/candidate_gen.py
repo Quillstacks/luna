@@ -1,253 +1,286 @@
-"""Sliding-window NAC scanner that turns raw frames into ``CandidateHit`` lists.
+"""Sliding-window NAC screener backed by a Cython LMAX-Disruptor ring buffer.
 
-The screening pipeline runs in three stages for every NAC image:
-
-1. **Tiling** — ``_generate_batches`` slides a fixed-size window across the
-   full-resolution pixel array, skipping border tiles that are more than 50 %
-   NaN, and streams non-overlapping batches to avoid exhausting host RAM.
-
-2. **Embedding** — each batch is forwarded through an ``EmbeddingModel``
-   (e.g. a CLIP or Matryoshka encoder) to produce a ``(B, D)`` feature matrix.
-
-3. **Retrieval & projection** — the feature matrix is queried against a
-   ``VectorStore`` of known pit embeddings.  Every hit that clears
-   ``score_threshold`` has its tile centroid unprojected through the frame's
-   ``LinearProjection`` to yield a selenographic ``(lon, lat)`` coordinate,
-   which is returned as a ``CandidateHit``.
-
-Typical usage::
-
-    screener = CandidateScreener(model=my_encoder, store=my_faiss_store)
-    hits = screener.process_nac("M102285549RE.IMG", score_threshold=0.85)
+Pipeline per NAC frame:
+1. **Tiling** — NACTransformer slices the memory-mapped stripe into fixed-size
+   windows inside the ring buffer (zero-copy, Cython speed).
+2. **Embedding** — Python consumer drains ready batches through an EmbeddingModel.
+3. **Retrieval** — embeddings are queried against a VectorStore; hits above
+   score_threshold are unprojected to selenographic coordinates and returned
+   as CandidateHit objects.
 """
 
 from __future__ import annotations
 
 import logging
-import math
+import queue
+import threading
+import time
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable
 
 import numpy as np
 from tqdm import tqdm
 
 from luna.io import LinearProjection, read_nac
+from luna.io import pixel_to_lonlat
+from luna.screening.engine import DisruptorEngine
+from luna.screening.engine import NACTransformer
+from luna.screening.engine import MappedStripe, push_stripe_to_ring
+from luna.utils.normalization import LunaNormalizer
 from .protocols import EmbeddingModel, TileMetadata, VectorStore
 
 log = logging.getLogger("luna.screening.candidate_gen")
 
+_RING_SIZE    = 1024
+_POLL_INTERVAL_S = 0.001
+
+
+# ---------------------------------------------------------------------------
+# ScreenerEngine — Cython ring buffer management
+# ---------------------------------------------------------------------------
+
+class ScreenerEngine:
+    """Manages the Cython disruptor, transformer thread, and normalization."""
+
+    def __init__(self, stats_path: Path, max_batch_size: int = 64) -> None:
+        self.engine      = DisruptorEngine(size=_RING_SIZE, num_consumers=1)
+        self.transformer = NACTransformer(self.engine, max_batch_size=max_batch_size)
+        self.normalizer  = LunaNormalizer(stats_path)
+        self._batch_ready = threading.Event()
+
+        self._thread = threading.Thread(
+            target=self.transformer.run_forever, 
+            daemon=True, 
+            name="luna.disruptor.transformer"
+        )
+        self._thread.start()
+
+    def _consumer_loop(self) -> None:
+        while True:
+            self.transformer.run_forever()
+            if self.transformer.is_batch_ready:
+                self._batch_ready.set()
+
+    def submit_nac(self, nac_path: Path, width: int, height: int) -> MappedStripe:
+        stripe = MappedStripe(str(nac_path))
+        push_stripe_to_ring(
+            self.engine, stripe, width, height,
+            stripe_id=0
+        )
+        return stripe
+
+    def get_batch(self) -> tuple[np.ndarray, list[tuple[int, int]]]:
+        """Block until the transformer has a ready batch."""
+        while not self.transformer.is_batch_ready:
+            time.sleep(0)
+        batch, offsets = self.transformer.get_current_batch_with_offsets()
+
+        self.transformer.is_batch_ready = 0
+        return batch, offsets
+
+
+# ---------------------------------------------------------------------------
+# DataIngestor — orchestrates projection, embedding, and store upsert
+# ---------------------------------------------------------------------------
 
 class DataIngestor:
-    """Orchestrates tiling, embedding, and vector ingestion for a single NAC frame."""
+    """Slice a NAC frame via the Cython ring buffer, embed, and ingest into a VectorStore."""
 
     def __init__(
         self,
         model: EmbeddingModel,
         store: VectorStore,
-        use_multiprocessing: bool = False,
-        num_workers: int | None = None,
+        stats_path: Path,
+        max_batch_size: int = 256,
     ) -> None:
-        self.model = model
-        self.store = store
-        self.use_multiprocessing = False
-        self.num_workers = 0
+        self.model   = model
+        self.store   = store
+        self.screener = ScreenerEngine(stats_path=stats_path, max_batch_size=max_batch_size)
+
+    # ------------------------------------------------------------------
+    # Coordinate projection helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_fast_spice_coord(label_path: Path) -> Callable[[float, float], tuple[float, float]]:
+    def _build_spice_coord_fn(
+        label_path: Path,
+    ) -> Callable[[float, float], tuple[float, float]]:
         import pvl
         import spiceypy as sp
-        from luna.io.spice_project import _NAC_PARAMS, _nac_side_from_pid, _read_times, furnish_kernels
-        
-        furnish_kernels()
-        
-        lbl = pvl.load(str(label_path))
-        side = _nac_side_from_pid(str(lbl["PRODUCT_ID"]))
-        p = _NAC_PARAMS[side]
-        et_start, _, line_rate, _, _ = _read_times(label_path)
-        
-        radii = sp.bodvrd("MOON", "RADII", 3)[1]
-        re_km, rp_km = float(radii[0]), float(radii[2])
-        f_body = (re_km - rp_km) / re_km
+        from luna.io.spice_project import (
+            _NAC_PARAMS, _nac_side_from_pid, _read_times, furnish_kernels,
+        )
 
-        boresight = p["boresight_sample"]
-        px_per_mm = p["px_per_mm"]
-        focal_mm = p["focal_mm"]
-        frame = p["frame"]
-        
-        def _fast_spice(x: float, y: float) -> tuple[float, float]:
-            et = et_start + (y * line_rate)
-            y_focal = (x - boresight) / px_per_mm
+        furnish_kernels()
+        lbl  = pvl.load(str(label_path))
+        side = _nac_side_from_pid(str(lbl["PRODUCT_ID"]))
+        p    = _NAC_PARAMS[side]
+        et_start, _, line_rate, _, _ = _read_times(label_path)
+
+        radii       = sp.bodvrd("MOON", "RADII", 3)[1]
+        re_km, rp_km = float(radii[0]), float(radii[2])
+        f_body      = (re_km - rp_km) / re_km
+        boresight   = p["boresight_sample"]
+        px_per_mm   = p["px_per_mm"]
+        focal_mm    = p["focal_mm"]
+        frame       = p["frame"]
+
+        def _fn(x: float, y: float) -> tuple[float, float]:
+            et       = et_start + y * line_rate
+            y_focal  = (x - boresight) / px_per_mm
             look_cam = np.array([0.0, y_focal, focal_mm])
-            
             try:
                 point, _, _ = sp.sincpt(
                     "Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", frame, look_cam
                 )
-                lon_rad, lat_rad, _ = sp.recgeo(point, re_km, f_body)
-                return float(np.rad2deg(lon_rad)), float(np.rad2deg(lat_rad))
+                lon, lat, _ = sp.recgeo(point, re_km, f_body)
+                return float(np.rad2deg(lon)), float(np.rad2deg(lat))
             except Exception:
                 return 0.0, 0.0
-                
-        return _fast_spice
 
-    def _generate_batches(
+        return _fn
+
+    def _build_coord_fn(
         self,
-        img_pixels: np.ndarray,
-        product_id: str,
-        tile_size: int,
-        stride: int,
-        batch_size: int,
-        coord_fn: Callable[[float, float], tuple[float, float]],
-    ) -> Iterator[tuple[np.ndarray, list[TileMetadata]]]:
-        
-        lines, samples = img_pixels.shape
-        y_steps = (lines - tile_size) // stride + 1
-        x_steps = (samples - tile_size) // stride + 1
+        path: Path,
+        img_geometry,
+        lines: int,
+        samples: int,
+    ) -> Callable[[float, float], tuple[float, float]]:
+        try:
+            proj = LinearProjection.from_nac_geometry(img_geometry, lines=lines, samples=samples)
+            log.info("Using bilinear projection for %s", path.name)
+            return lambda x, y: pixel_to_lonlat(proj, x, y)
+        except (ValueError, KeyError, TypeError) as e:
+            log.warning("Bilinear projection failed (%s), falling back to SPICE ...", e)
 
-        if y_steps <= 0 or x_steps <= 0:
-            return
+        from luna.io.spice_project import ensure_kernels_for_label
+        ensure_kernels_for_label(path)
+        coord_fn = self._build_spice_coord_fn(path)
+        coord_fn(samples / 2.0, lines / 2.0)
+        log.info("SPICE kernels active for %s", path.name)
+        return coord_fn
 
-        shape = (y_steps, x_steps, tile_size, tile_size)
-        strides = (
-            img_pixels.strides[0] * stride,
-            img_pixels.strides[1] * stride,
-            img_pixels.strides[0],
-            img_pixels.strides[1]
-        )
-        
-        # O(1) memory view creation
-        patches_view = np.lib.stride_tricks.as_strided(img_pixels, shape=shape, strides=strides)
-        total_tiles = y_steps * x_steps
-
-        for batch_start in range(0, total_tiles, batch_size):
-            batch_end = min(batch_start + batch_size, total_tiles)
-            current_batch_size = batch_end - batch_start
-
-            batch_tiles_raw = np.empty((current_batch_size, tile_size, tile_size), dtype=img_pixels.dtype)
-            batch_coords = []
-
-            for idx in range(current_batch_size):
-                flat_idx = batch_start + idx
-                i = flat_idx // x_steps
-                j = flat_idx % x_steps
-                batch_tiles_raw[idx] = patches_view[i, j]
-                batch_coords.append((j * stride, i * stride))
-
-            # Vectorized NaN check
-            nan_counts = np.isnan(batch_tiles_raw).sum(axis=(1, 2))
-            valid_mask = nan_counts <= (tile_size * tile_size * 0.5)
-
-            if not np.any(valid_mask):
-                continue
-
-            valid_tiles = batch_tiles_raw[valid_mask]
-            valid_tiles = np.nan_to_num(valid_tiles, nan=0.5)
-
-            # Vectorized Min-Max Scaling
-            t_min = valid_tiles.min(axis=(1, 2), keepdims=True)
-            t_max = valid_tiles.max(axis=(1, 2), keepdims=True)
-            denom = t_max - t_min
-            denom[denom == 0] = 1.0
-
-            clean_tiles = (valid_tiles - t_min) / denom
-            
-            zero_mask = (t_max == t_min).squeeze(axis=(1, 2))
-            if clean_tiles.shape[0] == 1:
-                if zero_mask.item():
-                    clean_tiles[0] = 0.0
-            else:
-                clean_tiles[zero_mask] = 0.0
-
-            batch_meta = []
-            valid_indices = np.where(valid_mask)[0]
-
-            # Coordinate projection is extremely slow, compute ONLY for valid tiles
-            for idx in valid_indices:
-                x, y = batch_coords[idx]
-                center_x = x + tile_size / 2.0
-                center_y = y + tile_size / 2.0
-                lon, lat = coord_fn(center_x, center_y)
-
-                batch_meta.append(TileMetadata(
-                    product_id=product_id,
-                    x_offset=int(x),
-                    y_offset=int(y),
-                    width=tile_size,
-                    height=tile_size,
-                    lon=float(lon),
-                    lat=float(lat),
-                ))
-
-            yield clean_tiles, batch_meta
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def ingest_nac(
         self,
         path: str | Path,
-        tile_size: int = 224,
-        stride: int = 112,
+        tile_size: int = 256,
+        stride: int = 192,
         batch_size: int = 256,
     ) -> int:
-        """Slice a NAC image, embed the tiles, and ingest them into Vector DB."""
+        """Tile, embed, and ingest a single NAC frame via multi-threaded pipeline."""
         path = Path(path)
-        img = read_nac(path, geometry=True)
+        img  = read_nac(path, geometry=True)
         lines, samples = img.pixels.shape
 
-        coord_fn = None
-        try:
-            proj = LinearProjection.from_nac_geometry(
-                img.geometry, lines=lines, samples=samples
-            )
-            from luna.io import pixel_to_lonlat
-            
-            def _bilinear_coord(x: float, y: float) -> tuple[float, float]:
-                return pixel_to_lonlat(proj, x, y)
-                
-            coord_fn = _bilinear_coord
-            log.info(f"  -> Using bilinear projection for {img.product_id}")
-            
-        except (ValueError, KeyError, TypeError) as e:
-            log.warning(f"  -> Bilinear projection failed ({e}), falling back to SPICE...")
-            from luna.io.spice_project import ensure_kernels_for_label
-            try:
-                ensure_kernels_for_label(path)
-                coord_fn = self._build_fast_spice_coord(path)
-                
-                # Test the function once to ensure the kernels are active
-                _ = coord_fn(samples / 2.0, lines / 2.0)
-                
-                log.info(f"  -> SPICE kernels loaded and optimized for {img.product_id}")
-            except Exception as spice_e:
-                raise RuntimeError(f"SPICE fallback failed as well: {spice_e}")
+        coord_fn = self._build_coord_fn(path, img.geometry, lines, samples)
+        stripe = self.screener.submit_nac(path, width=samples, height=lines)
 
-        total_batches_max = math.ceil(
-            ((lines - tile_size) // stride + 1)
+        total_tiles   = (
+            ((lines   - tile_size) // stride + 1)
             * ((samples - tile_size) // stride + 1)
-            / batch_size
         )
+        
+        gpu_queue = queue.Queue(maxsize=50)
+        db_queue  = queue.Queue(maxsize=50)
 
-        batch_generator = self._generate_batches(
-            img_pixels=img.pixels,
-            product_id=img.product_id,
-            tile_size=tile_size,
-            stride=stride,
-            batch_size=batch_size,
-            coord_fn=coord_fn
-        )
+        def fetch_worker():
+            fetched = 0
+            is_first_batch = True
+            
+            while fetched < total_tiles:
+                # --- TIMING: Cython Fetch ---
+                t_start = time.perf_counter()
+                batch, offsets = self.screener.get_batch()
+                t_fetch = time.perf_counter() - t_start
+                
+                # --- TIMING: CPU Math ---
+                t_start_math = time.perf_counter()
+                meta_batch = [
+                    TileMetadata(
+                        product_id = img.product_id,
+                        x_offset   = x,
+                        y_offset   = y,
+                        width      = tile_size,
+                        height     = tile_size,
+                        lon        = coord_fn(x + tile_size / 2.0, y + tile_size / 2.0)[0],
+                        lat        = coord_fn(x + tile_size / 2.0, y + tile_size / 2.0)[1],
+                    )
+                    for x, y in offsets
+                ]
+                t_math = time.perf_counter() - t_start_math
 
-        pbar = tqdm(
-            batch_generator,
-            total=total_batches_max,
-            desc=f"Ingesting {img.product_id}",
-            unit="batch",
-            leave=False,
-        )
+                if is_first_batch:
+                    log.info(f"⏱[FETCHER] Cython I/O: {t_fetch:.4f}s | CPU Math: {t_math:.4f}s (Batch Size: {len(batch)})")
+                    is_first_batch = False
+
+                gpu_queue.put((batch, meta_batch))
+                fetched += len(batch)
+                
+            gpu_queue.put(None)
+
+        def gpu_worker():
+            is_first_batch = True
+            while True:
+                item = gpu_queue.get()
+                if item is None:
+                    db_queue.put(None)
+                    gpu_queue.task_done()
+                    break
+                    
+                batch, meta_batch = item
+                
+                # --- TIMING: GPU Inference ---
+                t_start = time.perf_counter()
+                embeddings = self.model.encode(batch)
+                t_gpu = time.perf_counter() - t_start
+                
+                if is_first_batch:
+                    log.info(f"⏱[GPU] MPS Inference: {t_gpu:.4f}s (Batch Size: {len(batch)})")
+                    is_first_batch = False
+
+                db_queue.put((embeddings, meta_batch))
+                gpu_queue.task_done()
+
+        threads = [
+            threading.Thread(target=fetch_worker, daemon=True, name="Luna-Fetcher"),
+            threading.Thread(target=gpu_worker, daemon=True, name="Luna-GPU")
+        ]
+        for t in threads:
+            t.start()
 
         total_ingested = 0
-        for tile_batch, meta_batch in pbar:
-            embeddings = self.model.encode(tile_batch)
-            self.store.upsert(embeddings, meta_batch)
-            
-            total_ingested += len(tile_batch)
-            pbar.set_postfix({"ingested": total_ingested})
+        is_first_batch = True
+        
+        with tqdm(total=total_tiles, desc=f"Ingesting {img.product_id}", unit="tile", leave=False) as pbar:
+            while True:
+                item = db_queue.get()
+                if item is None:
+                    db_queue.task_done()
+                    break
+                    
+                embeddings, meta_batch = item
+                
+                # --- TIMING: FAISS DB Upsert ---
+                t_start = time.perf_counter()
+                self.store.upsert(embeddings, meta_batch)
+                t_db = time.perf_counter() - t_start
+                
+                if is_first_batch:
+                    log.info(f"⏱[DB] FAISS Upsert: {t_db:.4f}s (Batch Size: {len(embeddings)})")
+                    is_first_batch = False
 
+                batch_len = len(meta_batch)
+                total_ingested += batch_len
+                pbar.update(batch_len)
+                db_queue.task_done()
+
+        for t in threads:
+            t.join()
+            
+        del stripe
         return total_ingested

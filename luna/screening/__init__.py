@@ -1,4 +1,4 @@
-from .candidate_gen import DataIngestor
+from .candidate_gen import DataIngestor, ScreenerEngine
 from .protocols import VectorStore, TileMetadata, SearchResult
 from .faiss_store import FaissLocalStore
 
@@ -7,5 +7,6 @@ __all__ = [
     "VectorStore",
     "TileMetadata",
     "SearchResult",
-    "FaissLocalStore"
+    "FaissLocalStore",
+    "ScreenerEngine"
 ]

@@ -2,6 +2,8 @@
 from setuptools import setup, Extension
 from Cython.Build import cythonize
 
+# python setup.py build_ext --inplace
+
 compile_args = ["-std=c++11", "-O3", "-march=native"]
 
 ext_modules = [

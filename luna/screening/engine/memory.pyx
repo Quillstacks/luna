@@ -84,7 +84,7 @@ def push_stripe_to_ring(
     MappedStripe    stripe,
     uint32_t        width,
     uint32_t        height,
-    uint64_t        stripe_id,
+    uint64_t        stripe_id
 ):
     """
     Python-facing entry point for initial integration testing.
