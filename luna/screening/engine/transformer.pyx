@@ -33,7 +33,7 @@ cdef extern from *:
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEF TILE_SIZE     = 256
+DEF TILE_SIZE     = 256      # must match luna.config.TILE_SIZE
 DEF PDS3_OFFSET   = 5064     # PDS3 header size in bytes
 DEF STRIDE        = 192      # Overlap
 DEF LROC_VALID_MIN = -32752  # LROC sensor: everything below is null or saturation artifact

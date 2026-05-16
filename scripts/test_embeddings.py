@@ -7,17 +7,12 @@ from pathlib import Path
 from sklearn.metrics.pairwise import cosine_similarity
 
 from luna.models.dinov3 import DINOEncoder
+from luna.config import SCRATCH_DIR, HF_REPO_ID, DINO_DIM, STATS_FILE
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("luna.scripts.test_embeddings")
 
-HF_REPO_ID        = "F1nnSBK/lunar-dinov3-lora"
-DINO_DIM          = 384
 SAMPLES_PER_CLASS = 3
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SCRATCH_DIR  = PROJECT_ROOT / "data" / "_scratch"
-STATS_FILE   = PROJECT_ROOT / "data" / "nac_stats.json"
 
 DINO_DEVICE = (
     "mps"  if torch.backends.mps.is_available() else

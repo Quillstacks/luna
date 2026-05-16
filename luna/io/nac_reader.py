@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Any
+from luna.config import LROC_VALID_MIN
 
 import requests
 import numpy as np
@@ -25,7 +26,7 @@ import pvl
 # CDR sentinel DN values (per INDEX.LBL / SIS §3.3). Any pixel <= VALID_MINIMUM
 # is not observational data and must be masked before normalisation.
 _NULL = -32768
-_VALID_MINIMUM = -32752
+_VALID_MINIMUM = LROC_VALID_MIN
 
 _QUICKMAP_NAC_SEARCH_ENDPOINT = "https://lroc-tiles.quickmap.io/fcgi-bin/fprovweb.exe"
 

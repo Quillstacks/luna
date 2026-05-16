@@ -12,16 +12,15 @@ from tqdm import tqdm
 
 from luna.io import LinearProjection, read_nac, pixel_to_lonlat
 from luna.screening.engine import DisruptorEngine, NACTransformer, MappedStripe, push_stripe_to_ring
+from luna.config import RING_SIZE
 from .protocols import EmbeddingModel, TileMetadata, VectorStore
 
 log = logging.getLogger(__name__)
 
-_RING_SIZE = 1024
-
 
 class ScreenerEngine:
     def __init__(self, max_batch_size: int = 64) -> None:
-        self.engine      = DisruptorEngine(size=_RING_SIZE, num_consumers=1)
+        self.engine      = DisruptorEngine(size=RING_SIZE, num_consumers=1)
         self.transformer = NACTransformer(self.engine, max_batch_size=max_batch_size)
         self._alive      = True
 

@@ -15,6 +15,7 @@ import pvl
 from luna.io.pds_index import PDSIndex
 from luna.io.projection import LinearProjection, pixel_to_lonlat
 from luna.models.dinov3 import DINOEncoder
+from luna.config import PROJECT_ROOT, SCRATCH_DIR, INDEX_DIR, SEARCH_K, FINAL_TOP_K, ZOOM_SIZE, MIN_DIST_PX
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("luna.consensus_geo_search")
@@ -29,16 +30,7 @@ NAC_PRODUCT_IDS: list[str] = [
     # "M102285549RE",
 ]
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR     = PROJECT_ROOT / "data"
-SCRATCH_DIR  = DATA_DIR / "_scratch"
 PITS_DIR     = SCRATCH_DIR / "pits"
-INDEX_DIR    = SCRATCH_DIR / "indices"
-
-SEARCH_K     = 1000
-FINAL_TOP_K  = 100
-ZOOM_SIZE    = 256
-MIN_DIST_PX  = 512.0
 OUTPUT_PLOT  = PROJECT_ROOT / "temp" / "consensus_geo_multi.svg"
 
 

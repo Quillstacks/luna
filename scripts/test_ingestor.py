@@ -12,6 +12,7 @@ from luna.io.pds_fetch import fetch_nac
 from luna.models.dinov3 import DINOEncoder
 from luna.screening import DataIngestor
 from luna.storage import FaissLocalStore
+from luna.config import SCRATCH_DIR, INDEX_DIR, HF_REPO_ID, DINO_DIM, TILE_SIZE, STRIDE, MAX_BATCH_SIZE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,15 +21,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("luna.scripts.test_ingestor")
 
-HF_REPO_ID = "F1nnSBK/lunar-dinov3-lora"
-VECTOR_DIM = 384
-TILE_SIZE  = 256
-STRIDE     = 192
-MAX_BATCH  = 64
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SCRATCH_DIR  = PROJECT_ROOT / "data" / "_scratch"
-INDEX_DIR    = SCRATCH_DIR / "indices"
 QUERY_NPY    = SCRATCH_DIR / "pits" / "Aristarchus_6_M109548636LC.npy"
 
 NAC_PRODUCT_IDS: list[str] = [
@@ -85,7 +78,7 @@ def main() -> None:
 
     nac_paths = resolve_nac_paths(NAC_PRODUCT_IDS, dest_dir=SCRATCH_DIR)
     encoder   = DINOEncoder(lora_dir=HF_REPO_ID, base_weights_path=HF_REPO_ID,
-                            matryoshka_dim=VECTOR_DIM, device="mps")
+                            matryoshka_dim=DINO_DIM, device="mps")
     q_vec     = load_query_vector(encoder, QUERY_NPY)
 
     total_tiles = 0
@@ -96,8 +89,8 @@ def main() -> None:
         log.info("── Ingesting %s ──", nac_path.name)
 
         # Fresh store + ingestor per NAC — prevents cumulative memory build-up
-        store    = FaissLocalStore(vector_dim=VECTOR_DIM)
-        ingestor = DataIngestor(model=encoder, store=store, max_batch_size=MAX_BATCH)
+        store    = FaissLocalStore(vector_dim=DINO_DIM)
+        ingestor = DataIngestor(model=encoder, store=store, max_batch_size=MAX_BATCH_SIZE)
 
         t0    = perf_counter()
         tiles = ingestor.ingest_nac(path=nac_path, tile_size=TILE_SIZE, stride=STRIDE)
