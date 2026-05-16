@@ -40,43 +40,46 @@ _POLL_INTERVAL_S = 0.001
 # ---------------------------------------------------------------------------
 
 class ScreenerEngine:
-    """Manages the Cython disruptor, transformer thread, and normalization."""
-
     def __init__(self, stats_path: Path, max_batch_size: int = 64) -> None:
-        self.engine      = DisruptorEngine(size=_RING_SIZE, num_consumers=1)
-        self.transformer = NACTransformer(self.engine, max_batch_size=max_batch_size)
-        self.normalizer  = LunaNormalizer(stats_path)
+        self.engine       = DisruptorEngine(size=_RING_SIZE, num_consumers=1)
+        self.transformer  = NACTransformer(self.engine, max_batch_size=max_batch_size)
+        self.normalizer   = LunaNormalizer(stats_path)
         self._batch_ready = threading.Event()
+        self._alive       = True
 
         self._thread = threading.Thread(
-            target=self.transformer.run_forever, 
-            daemon=True, 
-            name="luna.disruptor.transformer"
+            target=self.transformer.run_forever,
+            daemon=True,
+            name="luna.disruptor.transformer",
         )
         self._thread.start()
 
-    def _consumer_loop(self) -> None:
-        while True:
-            self.transformer.run_forever()
-            if self.transformer.is_batch_ready:
-                self._batch_ready.set()
-
     def submit_nac(self, nac_path: Path, width: int, height: int) -> MappedStripe:
         stripe = MappedStripe(str(nac_path))
-        push_stripe_to_ring(
-            self.engine, stripe, width, height,
-            stripe_id=0
-        )
+        push_stripe_to_ring(self.engine, stripe, width, height, stripe_id=0)
         return stripe
 
     def get_batch(self) -> tuple[np.ndarray, list[tuple[int, int]]]:
-        """Block until the transformer has a ready batch."""
         while not self.transformer.is_batch_ready:
             time.sleep(0)
         batch, offsets = self.transformer.get_current_batch_with_offsets()
-
         self.transformer.is_batch_ready = 0
         return batch, offsets
+
+    def shutdown(self) -> None:
+        if not self._alive:
+            return
+        self._alive = False
+
+        self.transformer.stop()
+
+        self.transformer.is_batch_ready = 0
+        self._thread.join(timeout=5.0)
+        if self._thread.is_alive():
+            log.warning("Transformer thread did not exit within timeout.")
+
+    def __del__(self) -> None:
+        self.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +138,8 @@ class DataIngestor:
                 )
                 lon, lat, _ = sp.recgeo(point, re_km, f_body)
                 return float(np.rad2deg(lon)), float(np.rad2deg(lat))
-            except Exception:
+            except Exception as e:
+                log.debug("SPICE sincpt failed at (%.1f, %.1f): %s", x, y, e)
                 return 0.0, 0.0
 
         return _fn

@@ -2,9 +2,11 @@ import logging
 import os
 from pathlib import Path
 from time import perf_counter
-
+import gc
+import torch
 import numpy as np
 
+from luna.io.pds_fetch import fetch_nac
 from luna.models.dinov3 import DINOEncoder
 from luna.screening.candidate_gen import DataIngestor
 from luna.screening.faiss_store import FaissLocalStore
@@ -17,97 +19,154 @@ logging.basicConfig(
 log = logging.getLogger("luna.scripts.test_ingestor")
 
 HF_REPO_ID = "F1nnSBK/lunar-dinov3-lora"
+VECTOR_DIM = 384
+TILE_SIZE  = 256
+STRIDE     = 192
+BATCH_SIZE = 256
+MAX_BATCH  = 64
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRATCH_DIR  = PROJECT_ROOT / "data" / "_scratch"
 STATS_FILE   = PROJECT_ROOT / "data" / "nac_stats.json"
-
-TEST_NAC_IMG = SCRATCH_DIR / "M157906985RC.IMG"
+INDEX_DIR    = SCRATCH_DIR / "indices"
 QUERY_NPY    = SCRATCH_DIR / "pits" / "Aristarchus_6_M109548636LC.npy"
 
+# Product IDs only — paths are resolved automatically
+NAC_PRODUCT_IDS: list[str] = [
+    "M1118880788RC",
+    "M1210724899LC",
+    # "M102285549RE",
+]
+# Or derive from a directory of already-downloaded files:
+# NAC_PRODUCT_IDS = [p.stem for p in sorted(SCRATCH_DIR.glob("*.IMG"))]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def resolve_nac_paths(product_ids: list[str], dest_dir: Path) -> list[Path]:
+    """Return local paths, downloading any missing NACs from PDS."""
+    paths = []
+    for pid in product_ids:
+        local = dest_dir / f"{pid}.IMG"
+        if local.exists():
+            log.info("Found local: %s", local.name)
+        else:
+            log.info("Fetching from PDS: %s ...", pid)
+            local = fetch_nac(pid, dest_dir=dest_dir)
+        paths.append(local)
+    return paths
+
+
+def load_query_vector(encoder: DINOEncoder, query_path: Path) -> np.ndarray | None:
+    import faiss
+    if not query_path.exists():
+        return None
+    img   = np.load(query_path).astype(np.float32)
+    valid = img[img > -32752]
+    if valid.size == 0:
+        return None
+    f_min, f_max = valid.min(), valid.max()
+    norm  = np.clip((img - f_min) / (f_max - f_min + 1e-6), 0, 1) if f_max > f_min else np.zeros_like(img)
+    batch = (np.expand_dims(norm, 0) * 255).astype(np.uint8)
+    vec   = np.ascontiguousarray(encoder.encode(batch), dtype=np.float32).reshape(1, -1)
+    faiss.normalize_L2(vec)
+    return vec
+
+
+def run_sanity_check(index_path: str, q_vec: np.ndarray) -> None:
+    import faiss
+    index      = faiss.read_index(index_path)
+    dists, ids = index.search(q_vec, 10)
+
+    log.info("Top-10 hits for anchor query:")
+    for rank, (d, idx) in enumerate(zip(dists[0], ids[0]), start=1):
+        log.info("  Rank %02d | dist %.4f | meta-id %d", rank, d, idx)
+
+    spread = float(dists[0][0] - dists[0][-1])
+    if spread < 0.001:
+        log.warning("Feature collapse detected — check Cython normalization or LoRA weights.")
+    else:
+        log.info("Healthy distance variance (spread=%.4f).", spread)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    if not TEST_NAC_IMG.exists():
-        log.error(f"Please place a valid NAC .IMG file at {TEST_NAC_IMG}")
+    if not NAC_PRODUCT_IDS:
+        log.error("NAC_PRODUCT_IDS is empty.")
         return
 
-    encoder = DINOEncoder(
-        lora_dir=HF_REPO_ID,
-        base_weights_path=HF_REPO_ID,
-        matryoshka_dim=384,
-        device="mps"
-    )
+    INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-    store = FaissLocalStore(vector_dim=384)
+    try:
+        nac_paths = resolve_nac_paths(NAC_PRODUCT_IDS, dest_dir=SCRATCH_DIR)
+    except RuntimeError as e:
+        log.error("Failed to resolve NAC files: %s", e)
+        return
 
-    ingestor = DataIngestor(
-        model=encoder,
-        store=store,
-        stats_path=STATS_FILE,
-        max_batch_size=16
-    )
+    encoder  = DINOEncoder(lora_dir=HF_REPO_ID, base_weights_path=HF_REPO_ID,
+                           matryoshka_dim=VECTOR_DIM, device="mps")
+    store    = FaissLocalStore(vector_dim=VECTOR_DIM)
+    ingestor = DataIngestor(model=encoder, store=store,
+                            stats_path=STATS_FILE, max_batch_size=MAX_BATCH)
 
-    log.info(f"Igniting Cython Disruptor Engine for {TEST_NAC_IMG.name}...")
-    
-    start_time = perf_counter()
-    
-    total_tiles = ingestor.ingest_nac(
-        path=TEST_NAC_IMG,
-        tile_size=256,
-        stride=192,
-        batch_size=128
-    )
-    
-    elapsed = perf_counter() - start_time
-    tiles_per_sec = total_tiles / elapsed
+    q_vec       = load_query_vector(encoder, QUERY_NPY)
+    total_tiles = 0
+    wall_start  = perf_counter()
+    per_nac_stats: list[dict] = []
 
-    log.info("Ingestion complete!")
-    log.info(f"Processed {total_tiles} tiles in {elapsed:.2f}s ({tiles_per_sec:.0f} tiles/s)")
+    for nac_path in nac_paths:
+        log.info("── Ingesting %s ──", nac_path.name)
 
-    prefix = str(SCRATCH_DIR / f"indices/faiss_{TEST_NAC_IMG.stem}")
-    store.save_to_disk(prefix)
-    log.info(f"FAISS index saved to {prefix}")
+        store    = FaissLocalStore(vector_dim=VECTOR_DIM)
+        ingestor = DataIngestor(model=encoder, store=store,
+                                stats_path=STATS_FILE, max_batch_size=MAX_BATCH)
 
-    index_file = f"{prefix}.index"
-    if os.path.exists(index_file) and QUERY_NPY.exists():
-        log.info("--- RUNNING FAISS SANITY CHECK ---")
-        import faiss
-        
-        index = faiss.read_index(index_file)
-        
-        img_array = np.load(QUERY_NPY).astype(np.float32)
-        valid = img_array[img_array > -32752]
-        if valid.size > 0:
-            f_min, f_max = valid.min(), valid.max()
-            q_norm = np.clip((img_array - f_min) / (f_max - f_min + 1e-6), 0, 1) if f_max > f_min else np.zeros_like(img_array)
-        else:
-            q_norm = np.zeros_like(img_array)
+        t0    = perf_counter()
+        tiles = ingestor.ingest_nac(path=nac_path, tile_size=TILE_SIZE,
+                                    stride=STRIDE, batch_size=BATCH_SIZE)
+        elapsed = perf_counter() - t0
+        tps     = tiles / elapsed if elapsed > 0 else 0.0
 
-        batch = q_norm.astype(np.float32)
-        if batch.ndim == 2:
-            batch = np.expand_dims(batch, axis=0)
-        batch_uint8 = (batch * 255).astype(np.uint8)
-        
-        q_vec = encoder.encode(batch_uint8)
-        
-        q_vec = np.ascontiguousarray(q_vec, dtype=np.float32).reshape(1, -1)
-        faiss.normalize_L2(q_vec)
-        
-        dists, ids = index.search(q_vec, 10)
-        
-        log.info("Top 10 Hits for Anchor:")
-        for i, (d, idx) in enumerate(zip(dists[0], ids[0])):
-            log.info(f"  Rank {i+1:02d} | Dist: {d:.4f} | Meta-ID: {idx}")
+        ingestor.screener.shutdown()
+        del ingestor
+        torch.mps.empty_cache()
+        gc.collect()
 
-        spread = dists[0][0] - dists[0][-1]
-        log.info(f"Distance Spread (Rank 1 to 10): {spread:.4f}")
-        
-        if spread < 0.001:
-            log.warning("WARNING: Feature Collapse detected! All vectors look identical.")
-            log.warning("Check your Cython local normalization or LoRA training weights.")
-        else:
-            log.info("SUCCESS: Healthy distance variance detected! Model is distinguishing features.")
+        prefix = str(INDEX_DIR / f"faiss_{nac_path.stem}")
+        store.save_to_disk(prefix)
+        log.info("  Index saved → %s", prefix)
+        del store
+        gc.collect()
+
+        per_nac_stats.append({"name": nac_path.name, "tiles": tiles,
+                               "elapsed": elapsed, "tps": tps})
+        total_tiles += tiles
+        log.info("  %d tiles | %.2fs | %.0f tiles/s", tiles, elapsed, tps)
+
+    total_elapsed = perf_counter() - wall_start
+
+    log.info("═" * 60)
+    log.info("INGESTION SUMMARY")
+    log.info("  NACs processed : %d", len(nac_paths))
+    for s in per_nac_stats:
+        log.info("  %-30s %5d tiles  %6.2fs  %6.0f t/s",
+                 s["name"], s["tiles"], s["elapsed"], s["tps"])
+    log.info("  Total tiles    : %d", total_tiles)
+    log.info("  Wall time      : %.2fs", total_elapsed)
+    log.info("  Avg throughput : %.0f tiles/s", total_tiles / total_elapsed)
+    log.info("═" * 60)
+
+    last_index = str(INDEX_DIR / f"faiss_{nac_paths[-1].stem}.index")
+    if q_vec is not None and os.path.exists(last_index):
+        log.info("── Sanity check on %s ──", Path(last_index).name)
+        run_sanity_check(last_index, q_vec)
     else:
-        log.info(f"Sanity check skipped (Index {index_file} or QUERY_NPY missing).")
+        log.info("Sanity check skipped (index or query missing).")
 
 
 if __name__ == "__main__":
