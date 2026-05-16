@@ -1,0 +1,30 @@
+# ISIS3 environment for Le Corre's preprocessing pipeline.
+#
+# Used by third_party/planetary_image_processing/LROC_NAC_process_and_convert.sh
+# (lronac2isis, spiceinit, lronaccal, lronacecho, cam2map) and downscale.sh
+# (gdal_translate -r cubicspline).
+#
+# Setup (Apple Silicon needs osx-64 subdir; ISIS has no native arm64 build):
+#     CONDA_SUBDIR=osx-64 conda env create -f environments/isis.yml
+#     conda activate luna-isis
+#     conda config --env --set subdir osx-64
+#     # Verify: `lronac2isis -help` should print the help, not "command not found"
+#
+# Intel Mac / Linux: just `conda env create -f environments/isis.yml`.
+#
+# We use `spiceinit web=true` so SPICE kernels are fetched on demand from the
+# USGS web service — no local kernel install needed.
+#
+# Run preprocessing:
+#     conda activate luna-isis
+#     bash third_party/planetary_image_processing/LROC_NAC_process_and_convert.sh 1 yes 50
+#
+# Install size: ~3 GB.
+
+name: luna-isis
+channels:
+  - usgs-astrogeology
+  - conda-forge
+dependencies:
+  - python=3.10
+  - isis=8.0.3
