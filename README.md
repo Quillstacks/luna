@@ -201,7 +201,7 @@ Always trust the visible pit shadow over the marker.
 
 This pipeline maps lunar orbital imagery to localized hazard vectors. The architectural graph below is dynamically updated on every commit via automated static analysis pipelines once all core verification systems clear.
 
-![Luna Pipeline Architecture](docs/assets/architecture.png)
+![Luna Pipeline Architecture](docs/assets/architecture.svg)
 
 ### Automated Verification Framework
 * **Static Dependency Inversion:** Resolved and checked via `pydeps` tracking.

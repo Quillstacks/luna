@@ -41,7 +41,9 @@ jobs:
     - name: Generate Dynamic Architecture Graph
       run: |
         mkdir -p docs/assets
-        pydeps luna --exclude-stdlib --max-module-depth=3 --output docs/assets/architecture.png
+        pydeps luna --max-module-depth=3 --noshow -o docs/assets/architecture.svg -T svg \
+            --only luna \
+            --rankdir LR
 
     - name: Commit and Push Architecture Update
       run: |
