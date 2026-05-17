@@ -111,7 +111,7 @@ class PDSIndex:
 
     def __init__(
         self,
-        base_url: str = DEFAULT_BASE,
+        base_url: str = None,
         cache_path: Optional[Path | str] = None,
         session: Optional[requests.Session] = None,
         archive: str = "CDR",
@@ -131,10 +131,14 @@ class PDSIndex:
         adapter = HTTPAdapter(max_retries=retries)
         self.session.mount('http://', adapter)
         self.session.mount('https://', adapter)
-        self.base_url = base_url.rstrip("/")
         self.archive = archive.upper()
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")
         
+        if base_url is None:
+            self.base_url = EDR_BASE if self.archive == "EDR" else DEFAULT_BASE
+        else:
+            self.base_url = base_url.rstrip("/")
+
         if cache_path is None:
             cache_path = CACHE_PATH.with_name(f"pds_volume_index_{self.archive.lower()}.json")
         

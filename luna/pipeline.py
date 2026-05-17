@@ -284,6 +284,7 @@ class LunaPipeline:
         score_thr: float = 0.5,
         essa_min_score: float = 0.0,
         output_dir: str | Path | None = None,
+        skip_preprocess: bool = False
     ) -> list[RefinedHit]:
         from luna.models import ESSARefiner
         from luna.config import WEIGHTS_DIR
@@ -292,34 +293,13 @@ class LunaPipeline:
         checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
         refiner    = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
 
-        # Build NAC context dicts from hits
-        pids = {h.product_id for h in hits}
-        nac_paths, nac_offsets, nac_dims = {}, {}, {}
 
-        log.info("Resolving image geometry and PVL labels for %d unique NAC frames ...", len(pids))
-        for pid in pids:
-            img_path = SCRATCH_DIR / f"{pid}.IMG"
-            if not img_path.exists():
-                log.warning("NAC %s not found locally — skipping ESSA for this frame.", pid)
-                continue
-            import pvl
-            with open(img_path, "rb") as f:
-                label = pvl.load(f)
-            img_block        = label["IMAGE"]
-            nac_paths[pid]   = img_path
-            nac_offsets[pid] = int(label["RECORD_BYTES"]) * int(label.get("LABEL_RECORDS", 1))
-            nac_dims[pid]    = (int(img_block["LINE_SAMPLES"]), int(img_block["LINES"]))
-
-        log.info("Passing %d candidates to ESSA network (score_threshold: %.2f) ...", len(hits), score_thr)
-        refined_hits = refiner.refine(
-            hits          = hits,
-            nac_img_paths = nac_paths,
-            nac_offsets   = nac_offsets,
-            nac_dims      = nac_dims,
-            score_thr     = score_thr,
-            essa_min_score = essa_min_score,
-            output_dir     = output_dir
+        log.info("Passing %d candidates to ESSA (score_thr=%.2f) ...", len(hits), score_thr)
+        return refiner.refine(
+            hits             = hits,
+            out_dir          = output_dir,
+            score_thr        = score_thr,
+            essa_min_score   = essa_min_score,
+            save_debug_plots = output_dir is not None,
+            skip_preprocess  = skip_preprocess
         )
-        
-        log.info("Refinement complete. %d / %d hits passed verification.", len(refined_hits), len(hits))
-        return refined_hits

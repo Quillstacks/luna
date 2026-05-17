@@ -97,7 +97,7 @@ def _conda_run_prefix() -> list[str]:
     if shutil.which("conda") is None:
         raise SystemExit(
             "ISIS3 not on PATH and `conda` not found.\n"
-            f"Setup: `CONDA_SUBDIR=osx-64 conda env create -f environments/isis.yml`."
+            "Setup: `CONDA_SUBDIR=osx-64 conda env create -f environments/isis.yml`."
         )
     return ["conda", "run", "-n", ISIS_ENV, "--no-capture-output"]
 
@@ -121,7 +121,7 @@ def preprocess_edr(edr_img: Path, workdir: Path) -> Path:
 
     prefix = _conda_run_prefix()
     if process is not None:
-        _run_in(workdir, prefix + ["bash", str(process), "1", "yes", "50"])
+        _run_in(workdir, prefix + ["bash", str(process), "./", "1", "0", "100"])
     else:
         _run_in(workdir, prefix + ["bash", str(PIP / "LROC_NAC_process.sh"), "1", "yes", "50"])
         _run_in(workdir, prefix + ["bash", str(PIP / "LROC_NAC_convert.sh"), "1"])
@@ -133,7 +133,11 @@ def preprocess_edr(edr_img: Path, workdir: Path) -> Path:
     full = tifs[0]
     log.info("preprocessed: %s", full)
 
-    _run_in(workdir, prefix + ["bash", str(downscale), str(workdir) + "/", str(TARGET_RES_M)])
+    import subprocess
+    try:
+        _run_in(workdir, prefix + ["bash", str(downscale), "./", str(TARGET_RES_M)])
+    except subprocess.CalledProcessError:
+        pass
     downscaled = sorted(workdir.glob(f"*_{TARGET_RES_M}.tif"))
     if not downscaled:
         raise RuntimeError(f"downscale produced no *_{TARGET_RES_M}.tif in {workdir}")
