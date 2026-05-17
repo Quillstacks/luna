@@ -1,0 +1,57 @@
+# .github/workflows/living_readme.yml
+name: Living Architecture Mapping
+
+on:
+  push:
+    branches: [ luna_screener_lite ]
+  pull_request:
+    branches: [ luna_screener_lite ]
+
+jobs:
+  map-architecture:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y graphviz
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pydeps
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Execute Quality Gateway (Pytest)
+      run: pytest tests/test_smoke.py
+
+    - name: Generate Dynamic Architecture Graph
+      run: |
+        mkdir -p docs/assets
+        pydeps luna --exclude-stdlib --max-module-depth=3 --output docs/assets/architecture.png
+
+    - name: Commit and Push Architecture Update
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action [Bot]"
+        git add docs/assets/architecture.png
+        if ! git diff --cached --quiet; then
+          git commit -m "docs: auto-update codebase architecture diagram [skip ci]"
+          git push
+        else
+          echo "No structural architecture changes detected."
+        fi

@@ -197,6 +197,16 @@ Always trust the visible pit shadow over the marker.
 - `catalogs/pit_nacs.json` — pit-id → list of referenced NAC products (811 pairs)
 - `scripts/` — the 5-step main loop, one script per step
 
+## System Architecture
+
+This pipeline maps lunar orbital imagery to localized hazard vectors. The architectural graph below is dynamically updated on every commit via automated static analysis pipelines once all core verification systems clear.
+
+![Luna Pipeline Architecture](docs/assets/architecture.png)
+
+### Automated Verification Framework
+* **Static Dependency Inversion:** Resolved and checked via `pydeps` tracking.
+* **Continuous Integration Gateway:** Handled through isolated GitHub Runner environments.
+
 ## Data sources
 
 | Dataset | What it is | Access | License |
