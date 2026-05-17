@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "Cython"]
 build-backend = "setuptools.build_meta"
+
 
 [project]
 name = "luna"
