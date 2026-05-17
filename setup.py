@@ -1,5 +1,5 @@
 
-from setuptools import setup, Extension
+from setuptools import setup, Extension, find_packages
 from Cython.Build import cythonize
 
 # python setup.py build_ext --inplace
@@ -29,6 +29,7 @@ ext_modules = [
 
 setup(
     name="luna-engine",
+    packages=find_packages(include=["luna", "luna.*"]),
     ext_modules=cythonize(
         ext_modules, 
         compiler_directives={'language_level': "3", 'boundscheck': False, 'wraparound': False}
