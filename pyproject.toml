@@ -36,3 +36,6 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["luna", "luna.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["luna/tests"]

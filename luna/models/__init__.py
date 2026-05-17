@@ -1,4 +1,4 @@
-from .maskrcnn import build_essa_model, build_maskrcnn, CocoMaskDataset
+from .maskrcnn import build_maskrcnn, build_essa_model
 from .essa import ESSARefiner, RefinedHit
 
-__all__ = ["build_essa_model", "build_maskrcnn", "CocoMaskDataset", "ESSARefiner", "RefinedHit"]
+__all__ = ["build_maskrcnn", "build_essa_model", "ESSARefiner", "RefinedHit"]

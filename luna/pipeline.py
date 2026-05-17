@@ -30,7 +30,6 @@ from luna.config import (
     STRIDE, TILE_SIZE,
 )
 from luna.io.pds_fetch import fetch_nac
-from luna.models.dinov3 import DINOEncoder
 from luna.screening.candidate_gen import DataIngestor
 from luna.screening.protocols import TileMetadata
 from luna.storage.faiss_store import FaissLocalStore
@@ -60,7 +59,7 @@ class CandidateHit:
 # ---------------------------------------------------------------------------
 
 class LunaPipeline:
-    def __init__(self, encoder: DINOEncoder, device: str) -> None:
+    def __init__(self, encoder, device: str) -> None:
         self._encoder = encoder
         self._device  = device
 
@@ -75,6 +74,7 @@ class LunaPipeline:
         matryoshka_dim: int = DINO_DIM,
         device: str | None = None,
     ) -> LunaPipeline:
+        from luna.models.dinov3 import DINOEncoder
         if device is None:
             device = (
                 "mps"  if torch.backends.mps.is_available() else
