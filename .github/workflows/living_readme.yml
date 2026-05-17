@@ -36,7 +36,7 @@ jobs:
         pip install -e .[dev]
 
     - name: Execute Quality Gateway (Pytest)
-      run: pytest luna/tests/test_smoke.py
+      run: python -m pytest luna/tests/
 
     - name: Generate Dynamic Architecture Graph
       run: |

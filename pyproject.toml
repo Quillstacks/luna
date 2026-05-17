@@ -34,4 +34,5 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["luna*"]
+where = ["."]
+include = ["luna", "luna.*"]
