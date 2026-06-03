@@ -78,7 +78,7 @@ def main() -> None:
 
     nac_paths = resolve_nac_paths(NAC_PRODUCT_IDS, dest_dir=SCRATCH_DIR)
     encoder   = DINOEncoder(lora_dir=HF_REPO_ID, base_weights_path=HF_REPO_ID,
-                            matryoshka_dim=DINO_DIM, device="mps")
+                            matryoshka_dim=DINO_DIM)
     q_vec     = load_query_vector(encoder, QUERY_NPY)
 
     total_tiles = 0
@@ -100,7 +100,10 @@ def main() -> None:
         # Shut down Cython thread before FAISS index build
         ingestor.screener.shutdown()
         del ingestor
-        torch.mps.empty_cache()
+        if encoder.device.type == "mps":
+            torch.mps.empty_cache()
+        elif encoder.device.type == "cuda":
+            torch.cuda.empty_cache()
         gc.collect()
 
 

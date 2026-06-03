@@ -81,7 +81,7 @@ class LunaPipeline:
                 "cuda" if torch.cuda.is_available()          else
                 "cpu"
             )
-        log.info("Loading encoder from %s on %s ...", repo_id, device)
+        log.info("Loading encoder from %s on %s (Batch Size: %d) ...", repo_id, device, MAX_BATCH_SIZE)
         encoder = DINOEncoder(
             lora_dir          = repo_id,
             base_weights_path = repo_id,
@@ -95,7 +95,8 @@ class LunaPipeline:
     # ------------------------------------------------------------------
 
     def _ingest(self, nac_path: Path) -> tuple[FaissLocalStore, list[TileMetadata]]:
-        log.info("Slicing and embedding %s (Tile: %d, Stride: %d) ...", nac_path.name, TILE_SIZE, STRIDE)
+        log.info("Slicing and embedding %s (Tile: %d, Stride: %d, Batch Size: %d) ...",
+                 nac_path.name, TILE_SIZE, STRIDE, MAX_BATCH_SIZE)
         store    = FaissLocalStore(vector_dim=DINO_DIM)
         ingestor = DataIngestor(model=self._encoder, store=store,
                                 max_batch_size=MAX_BATCH_SIZE)
@@ -105,6 +106,10 @@ class LunaPipeline:
         del ingestor
         if self._device == "mps":
             torch.mps.empty_cache()
+        elif self._device == "cuda":
+            torch.cuda.empty_cache()
+        elif self._device == "cpu":
+            pass
         gc.collect()
         log.info("Ingestion complete. Generated %d tile embeddings.", len(store._metadata))
         return store, store._metadata
@@ -113,6 +118,8 @@ class LunaPipeline:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         if self._device == "mps":
             torch.mps.empty_cache()
+        elif self._device == "cuda":
+            torch.cuda.empty_cache()
         gc.collect()
         prefix = str(INDEX_DIR / f"faiss_{nac_path.stem}")
         log.info("Writing FAISS index and metadata to %s ...", prefix)
@@ -140,6 +147,8 @@ class LunaPipeline:
 
         if self._device == "mps":
             torch.mps.empty_cache()
+        elif self._device == "cuda":
+            torch.cuda.empty_cache()
         gc.collect()
 
         stacked = np.vstack(vecs).astype(np.float32)
@@ -162,6 +171,15 @@ class LunaPipeline:
 
         log.info("Loading FAISS index %s.index for matching ...", index_prefix)
         index = faiss.read_index(f"{index_prefix}.index")
+
+        if torch.cuda.is_available():
+            try:
+                res = faiss.StandardGpuResources()
+                index = faiss.index_cpu_to_gpu(res, 0, index)
+                log.info("Moved FAISS index to GPU for searching.")
+            except (AttributeError, Exception) as e:
+                log.warning("FAISS GPU search not available, falling back to CPU: %s", e)
+
         log.info("Executing k-NN search (k=%d) for %d query vectors ...", k, len(query_vecs))
         dists, ids = index.search(query_vecs, k)
 

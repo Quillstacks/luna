@@ -14,12 +14,6 @@ log = logging.getLogger("luna.scripts.test_embeddings")
 
 SAMPLES_PER_CLASS = 3
 
-DINO_DEVICE = (
-    "mps"  if torch.backends.mps.is_available() else
-    "cuda" if torch.cuda.is_available()          else
-    "cpu"
-)
-
 
 def _load_stats(stats_path: Path) -> dict:
     if stats_path.exists():
@@ -83,8 +77,7 @@ def main() -> None:
     encoder = DINOEncoder(
         lora_dir          = HF_REPO_ID,
         base_weights_path = HF_REPO_ID,
-        matryoshka_dim    = DINO_DIM,
-        device            = DINO_DEVICE,
+        matryoshka_dim    = DINO_DIM
     )
 
     embeddings = embed_files(all_files, encoder, stats)

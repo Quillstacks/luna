@@ -117,6 +117,39 @@ class DataIngestor:
         log.info("SPICE kernels active for %s", path.name)
         return coord_fn
 
+    def _safe_encode(self, batch: np.ndarray) -> np.ndarray:
+        """Encode a batch safely, falling back and halving the batch on GPU/MPS OOM errors."""
+        if len(batch) == 0:
+            dim = getattr(self.model, "matryoshka_dim", 384)
+            return np.empty((0, dim), dtype=np.float32)
+
+        import torch
+        try:
+            return self.model.encode(batch)
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            # Detect CUDA or MPS out-of-memory patterns in the error message
+            is_oom = isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower() or "oom" in str(e).lower()
+            if not is_oom:
+                raise e
+
+            if len(batch) <= 1:
+                log.error("Out of memory encountered even with batch size of 1. Cannot recover.")
+                raise e
+
+            # Clear cache to free up memory before retry
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+
+            # Halve the batch size and recursively retry
+            half_size = len(batch) // 2
+            log.warning("OOM detected during DINO encoding, clearing cache and halving batch of size %d to %d ...", len(batch), half_size)
+
+            sub_batches = [batch[:half_size], batch[half_size:]]
+            results = [self._safe_encode(sub) for sub in sub_batches]
+            return np.concatenate(results, axis=0)
+
     def _stream(
         self,
         path: Path,
@@ -153,7 +186,7 @@ class DataIngestor:
                     for x, y in offsets
                 ]
 
-                embeddings = self.model.encode(batch)
+                embeddings = self._safe_encode(batch)
                 fetched   += len(embeddings)
                 pbar.update(len(embeddings))
                 yield embeddings, meta_batch

@@ -2,7 +2,7 @@
 
 # luna/tests/test_smoke.py
 def test_ci_pipeline_gateway():
-    """Import-Smoke-Test — kein Model-Load, kein GPU nötig."""
+    """Import smoke test — no model load, no GPU required."""
     from luna import LunaPipeline, CandidateHit
     from luna.config import DINO_DIM, TILE_SIZE
     from luna.screening.protocols import TileMetadata

@@ -37,13 +37,30 @@ class FaissLocalStore(VectorStore):
         all_vectors = np.ascontiguousarray(np.concatenate(self._vectors, axis=0))
 
         faiss.normalize_L2(all_vectors)
-        index = faiss.IndexFlatIP(self.dim)
-        index.add(all_vectors)
+        cpu_index = faiss.IndexFlatIP(self.dim)
+
+        import torch
+        gpu_index = None
+        if torch.cuda.is_available():
+            try:
+                res = faiss.StandardGpuResources()
+                gpu_index = faiss.index_cpu_to_gpu(res, 0, cpu_index)
+                gpu_index.add(all_vectors)
+                log.info("Built FAISS index on GPU.")
+            except (AttributeError, Exception) as e:
+                log.warning("FAISS GPU support not available, falling back to CPU. Error: %s", e)
+
+        if gpu_index is None:
+            cpu_index.add(all_vectors)
+            index_to_write = cpu_index
+            log.info("Built FAISS index on CPU.")
+        else:
+            index_to_write = faiss.index_gpu_to_cpu(gpu_index)
 
         index_path = f"{prefix_path}.index"
         meta_path = f"{prefix_path}_meta.pkl"
 
-        faiss.write_index(index, index_path)
+        faiss.write_index(index_to_write, index_path)
         with open(meta_path, "wb") as f:
             pickle.dump(self._metadata, f)
 
