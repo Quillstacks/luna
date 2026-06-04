@@ -1,10 +1,10 @@
 """
 scripts/visualize_hits.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-Visualisiert ESSA-bestätigte Pit-/Skylight-Kandidaten aus dem letzten Pipeline-Lauf.
-Schneidet Tiles über lon/lat → GeoTIFF-Pixel-Projektion (identisch zu ESSA).
+Visualizes ESSA-confirmed pit/skylight candidates from the last pipeline run.
+Crops tiles using lon/lat → GeoTIFF pixel projection (identical to ESSA).
 
-Aufruf vom Projekt-Root:
+Call from project root:
     python scripts/visualize_hits.py --nac M1118880788RC --score 0.10 --skip-preprocess
 """
 import sys, os
@@ -63,10 +63,10 @@ def render_hits(hits, tif_path: Path, out_dir: Path, nac_id: str):
     out_dir.mkdir(parents=True, exist_ok=True)
     n = len(hits)
     if n == 0:
-        log.warning("Keine Treffer zum Visualisieren.")
+        log.warning("No hits to visualize.")
         return None, None
 
-    log.info("Öffne GeoTIFF: %s", tif_path)
+    log.info("Opening GeoTIFF: %s", tif_path)
     with rasterio.open(tif_path) as src:
         H, W = src.height, src.width
         log.info("GeoTIFF: %dx%d px", W, H)
@@ -127,14 +127,14 @@ def render_hits(hits, tif_path: Path, out_dir: Path, nac_id: str):
     for ax in axes_flat[n:]:
         ax.set_visible(False)
 
-    fig.suptitle(f"LCVK + ESSA — {nac_id}  ({n} Kandidaten)",
+    fig.suptitle(f"LCVK + ESSA — {nac_id}  ({n} candidates)",
                  color="white", fontsize=12, fontweight="bold", y=1.01)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
 
     tiles_path = out_dir / f"{nac_id}_tiles.png"
     fig.savefig(tiles_path, dpi=160, bbox_inches="tight", facecolor="#0d0d0d")
     plt.close(fig)
-    log.info("Tile-Mosaik → %s", tiles_path)
+    log.info("Tile mosaic → %s", tiles_path)
 
     # -------------------------------------------------------------------------
     # 2. NAC Overview Strip (downsampled)
@@ -197,22 +197,22 @@ def main():
         output_dir       = args.out_dir,
         skip_preprocess  = args.skip_preprocess,
     )
-    log.info("Pipeline: %.1fs → %d Treffer", time.perf_counter() - t0, len(refined))
+    log.info("Pipeline: %.1fs → %d hits", time.perf_counter() - t0, len(refined))
 
     if not refined:
-        print("Keine Treffer.")
+        print("No hits found.")
         return
 
     dump_root = Path(args.out_dir) / args.nac
     tifs = sorted(dump_root.glob("*_1.5.tif")) or sorted(dump_root.glob("*.tif"))
     if not tifs:
-        log.error("Kein GeoTIFF in %s gefunden", dump_root)
+        log.error("No GeoTIFF found in %s", dump_root)
         return
 
     out_vis = dump_root / "vis"
     tiles_p, overview_p = render_hits(refined, tifs[0], out_vis, args.nac)
-    print(f"\nGespeichert:")
-    if tiles_p:    print(f"  Tile-Mosaik → {tiles_p}")
+    print(f"\nSaved:")
+    if tiles_p:    print(f"  Tile mosaic → {tiles_p}")
     if overview_p: print(f"  Overview    → {overview_p}")
 
 
