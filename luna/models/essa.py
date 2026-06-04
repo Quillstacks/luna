@@ -44,8 +44,10 @@ class RefinedHit:
     dino_score: float
     essa_score: float
     essa_class: str
-    lon: float
+    lon: float        # LCVK candidate tile centre (coarse)
     lat: float
+    essa_lon: float   # ESSA detection centroid (accurate)
+    essa_lat: float
     x_offset: int
     y_offset: int
 
@@ -91,7 +93,7 @@ class ESSARefiner:
     ) -> list[RefinedHit]:
         # Lazy imports — heavy, only needed at refine time
         from scripts.essa_smoke import (
-            preprocess_edr, lonlat_to_rowcol,
+            preprocess_edr, lonlat_to_rowcol, rowcol_to_lonlat,
             _read_tile, _infer_tile,
             TILE_SIZE, TARGET_RES_M,
         )
@@ -150,13 +152,19 @@ class ESSARefiner:
 
                     essa_score, essa_class = 0.0, "none"
                     best_box = None
+                    essa_lon, essa_lat = hit.lon, hit.lat   # fallback = candidate centre
                     for cls_id, cls_name in [(2, "pit"), (1, "skylight")]:
                         cls_dets = [d for d in tile_dets if d["class"] == cls_id]
                         if cls_dets:
-                            best      = max(cls_dets, key=lambda d: d["score"])
+                            best       = max(cls_dets, key=lambda d: d["score"])
                             essa_score = best["score"]
                             essa_class = cls_name
                             best_box   = best["box"]
+                            # Compute accurate centroid lon/lat from ESSA mask centroid
+                            cx_t, cy_t = best["centroid_local"]
+                            essa_col = c0 + cx_t
+                            essa_row = r0 + cy_t
+                            essa_lon, essa_lat = rowcol_to_lonlat(src, essa_row, essa_col)
                             break
 
                     if essa_score < essa_min_score:
@@ -166,11 +174,31 @@ class ESSARefiner:
                         "hit":        hit,
                         "essa_score": essa_score,
                         "essa_class": essa_class,
+                        "essa_lon":   essa_lon,
+                        "essa_lat":   essa_lat,
                         "tile":       tile if save_debug_plots else None,
                         "box":        best_box,
                     })
 
         candidates.sort(key=lambda x: (-x["essa_score"], -x["hit"].votes))
+
+        # --- Post-ESSA spatial NMS -------------------------------------------
+        # Multiple LCVK candidate tiles may contain the same pit.  Deduplicate
+        # by ESSA centroid proximity: keep only the highest-scoring hit within
+        # a 200 m radius (≈ 133 px at 1.5 m/px).
+        _NMS_DIST_DEG = 200 / 1_737_400 * (180 / 3.14159265)  # ~0.0066°
+        deduped: list[dict] = []
+        for cand in candidates:
+            lon_c, lat_c = cand["essa_lon"], cand["essa_lat"]
+            duplicate = any(
+                abs(lon_c - d["essa_lon"]) < _NMS_DIST_DEG
+                and abs(lat_c - d["essa_lat"]) < _NMS_DIST_DEG
+                for d in deduped
+            )
+            if not duplicate:
+                deduped.append(cand)
+        candidates = deduped
+        # ---------------------------------------------------------------------
 
         refined: list[RefinedHit] = []
         for rank, item in enumerate(candidates, start=1):
@@ -184,6 +212,8 @@ class ESSARefiner:
                 essa_class = item["essa_class"],
                 lon        = h.lon,
                 lat        = h.lat,
+                essa_lon   = item["essa_lon"],
+                essa_lat   = item["essa_lat"],
                 x_offset   = h.x_offset,
                 y_offset   = h.y_offset,
             ))

@@ -11,7 +11,8 @@ import numpy as np
 from luna.io.pds_fetch import fetch_nac
 from luna.models.dinov3 import DINOEncoder
 from luna.screening import DataIngestor
-from luna.storage import FaissLocalStore
+from luna.storage import LcvkLocalStore
+from luna.screening.lcvk import LcvkEngine
 from luna.config import SCRATCH_DIR, INDEX_DIR, HF_REPO_ID, DINO_DIM, TILE_SIZE, STRIDE, MAX_BATCH_SIZE
 
 logging.basicConfig(
@@ -44,7 +45,6 @@ def resolve_nac_paths(product_ids: list[str], dest_dir: Path) -> list[Path]:
 
 
 def load_query_vector(encoder: DINOEncoder, query_path: Path) -> np.ndarray | None:
-    import faiss
     if not query_path.exists():
         return None
     img   = np.load(query_path).astype(np.float32)
@@ -55,22 +55,18 @@ def load_query_vector(encoder: DINOEncoder, query_path: Path) -> np.ndarray | No
     norm  = np.clip((img - f_min) / (f_max - f_min + 1e-6), 0, 1) if f_max > f_min else np.zeros_like(img)
     batch = (np.expand_dims(norm, 0) * 255).astype(np.uint8)
     vec   = np.ascontiguousarray(encoder.encode(batch), dtype=np.float32).reshape(1, -1)
-    faiss.normalize_L2(vec)
     return vec
 
 
 def run_sanity_check(index_path: str, q_vec: np.ndarray) -> None:
-    import faiss
-    index      = faiss.read_index(index_path)
-    dists, ids = index.search(q_vec, 10)
-    log.info("Top-10 hits:")
-    for rank, (d, idx) in enumerate(zip(dists[0], ids[0]), start=1):
-        log.info("  Rank %02d | dist %.4f | id %d", rank, d, idx)
-    spread = float(dists[0][0] - dists[0][-1])
-    if spread < 0.001:
-        log.warning("Feature collapse detected.")
-    else:
-        log.info("Healthy variance (spread=%.4f).", spread)
+    bin_path = index_path.replace(".index", ".bin").replace("faiss_", "lcvk_")
+    q_bin = LcvkEngine.binarize(q_vec)
+    with LcvkEngine() as engine:
+        engine.load_index("test", bin_path)
+        ids, dists = engine.batch_search("test", q_bin, k=10)
+    log.info("Top-10 LCVK Hamming hits:")
+    for rank, (idx, dist) in enumerate(zip(ids[0], dists[0]), start=1):
+        log.info("  Rank %02d | Hamming %3d | id %d", rank, dist, idx)
 
 
 def main() -> None:
@@ -89,7 +85,7 @@ def main() -> None:
         log.info("── Ingesting %s ──", nac_path.name)
 
         # Fresh store + ingestor per NAC — prevents cumulative memory build-up
-        store    = FaissLocalStore(vector_dim=DINO_DIM)
+        store    = LcvkLocalStore()
         ingestor = DataIngestor(model=encoder, store=store, max_batch_size=MAX_BATCH_SIZE)
 
         t0    = perf_counter()
@@ -107,7 +103,7 @@ def main() -> None:
         gc.collect()
 
 
-        prefix = str(INDEX_DIR / f"faiss_{nac_path.stem}")
+        prefix = str(INDEX_DIR / f"lcvk_{nac_path.stem}")
         Path(prefix).parent.mkdir(parents=True, exist_ok=True)
         store.save_to_disk(prefix)
         log.info("  Index saved → %s", prefix)
@@ -128,7 +124,7 @@ def main() -> None:
              total_tiles, total_elapsed, total_tiles / total_elapsed)
     log.info("═" * 60)
 
-    last_index = str(INDEX_DIR / f"faiss_{nac_paths[-1].stem}.index")
+    last_index = str(INDEX_DIR / f"lcvk_{nac_paths[-1].stem}.index")
     if q_vec is not None and os.path.exists(last_index):
         run_sanity_check(last_index, q_vec)
 
