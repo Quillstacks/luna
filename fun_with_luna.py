@@ -44,6 +44,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Directory for output SVGs/PNGs and TIFs")
     parser.add_argument("--skip-preprocess", action="store_true", 
                         help="Skip ISIS preprocessing and reuse existing GeoTIFF")
+    parser.add_argument("--force-reingest", action="store_true",
+                        help="Rebuild the LCVK index even if one already exists")
     return parser.parse_args()
 
 
@@ -154,9 +156,10 @@ def main() -> None:
     pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
 
     # Phase 1: DINOv3 Vector Scan
-    console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & FAISS Index Matching...[/]")
+    console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & LCVK Index Matching...[/]")
     start_scan = time.perf_counter()
-    hits = pipeline.scan(args.nac, query_dir=args.query_dir)
+    hits = pipeline.scan(args.nac, query_dir=args.query_dir,
+                         force_reingest=args.force_reingest)
     duration_scan = time.perf_counter() - start_scan
 
     # Phase 2: ESSA Refinement

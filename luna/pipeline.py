@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
-import faiss
 
 import gc
 import logging
@@ -31,8 +30,9 @@ from luna.config import (
 )
 from luna.io.pds_fetch import fetch_nac
 from luna.screening.candidate_gen import DataIngestor
+from luna.screening.lcvk import LcvkEngine
 from luna.screening.protocols import TileMetadata
-from luna.storage.faiss_store import FaissLocalStore
+from luna.storage.lcvk_store import LcvkLocalStore
 from luna.models import RefinedHit
 
 log = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class CandidateHit:
     rank: int
     product_id: str
     votes: int
-    score: float          # best inner-product across all anchor queries
+    score: float          # best Hamming distance (lower = better match)
     lon: float
     lat: float
     x_offset: int
@@ -81,7 +81,7 @@ class LunaPipeline:
                 "cuda" if torch.cuda.is_available()          else
                 "cpu"
             )
-        log.info("Loading encoder from %s on %s (Batch Size: %d) ...", repo_id, device, MAX_BATCH_SIZE)
+        log.info("Loading encoder from %s on %s (Batch Size: %d) …", repo_id, device, MAX_BATCH_SIZE)
         encoder = DINOEncoder(
             lora_dir          = repo_id,
             base_weights_path = repo_id,
@@ -94,10 +94,12 @@ class LunaPipeline:
     # Ingest
     # ------------------------------------------------------------------
 
-    def _ingest(self, nac_path: Path) -> tuple[FaissLocalStore, list[TileMetadata]]:
-        log.info("Slicing and embedding %s (Tile: %d, Stride: %d, Batch Size: %d) ...",
-                 nac_path.name, TILE_SIZE, STRIDE, MAX_BATCH_SIZE)
-        store    = FaissLocalStore(vector_dim=DINO_DIM)
+    def _ingest(self, nac_path: Path) -> tuple[LcvkLocalStore, list[TileMetadata]]:
+        log.info(
+            "Slicing and embedding %s (Tile: %d, Stride: %d, Batch Size: %d) …",
+            nac_path.name, TILE_SIZE, STRIDE, MAX_BATCH_SIZE,
+        )
+        store    = LcvkLocalStore()
         ingestor = DataIngestor(model=self._encoder, store=store,
                                 max_batch_size=MAX_BATCH_SIZE)
         ingestor.ingest_nac(path=nac_path, tile_size=TILE_SIZE, stride=STRIDE)
@@ -108,21 +110,19 @@ class LunaPipeline:
             torch.mps.empty_cache()
         elif self._device == "cuda":
             torch.cuda.empty_cache()
-        elif self._device == "cpu":
-            pass
         gc.collect()
         log.info("Ingestion complete. Generated %d tile embeddings.", len(store._metadata))
         return store, store._metadata
 
-    def _save_index(self, store: FaissLocalStore, nac_path: Path) -> Path:
+    def _save_index(self, store: LcvkLocalStore, nac_path: Path) -> Path:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         if self._device == "mps":
             torch.mps.empty_cache()
         elif self._device == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
-        prefix = str(INDEX_DIR / f"faiss_{nac_path.stem}")
-        log.info("Writing FAISS index and metadata to %s ...", prefix)
+        prefix = str(INDEX_DIR / f"lcvk_{nac_path.stem}")
+        log.info("Compiling LCVK PLAN index → %s.bin …", prefix)
         store.save_to_disk(prefix)
         return Path(prefix)
 
@@ -131,6 +131,11 @@ class LunaPipeline:
     # ------------------------------------------------------------------
 
     def _encode_queries(self, query_dir: str | Path) -> np.ndarray:
+        """Return raw float32 embeddings (N_queries, DINO_DIM).
+
+        Binarization is deferred to ``_search`` so the same float32 vectors
+        can be reused across multiple NACs without re-encoding.
+        """
         query_dir = Path(query_dir)
         paths     = sorted(query_dir.glob("*.npy"))
         if not paths:
@@ -152,48 +157,63 @@ class LunaPipeline:
         gc.collect()
 
         stacked = np.vstack(vecs).astype(np.float32)
-        faiss.normalize_L2(stacked)
-        log.info("Encoded %d query anchors into matrix shape %s.", len(paths), stacked.shape)
+        log.info("Encoded %d query anchors, shape %s.", len(paths), stacked.shape)
         return stacked
 
     # ------------------------------------------------------------------
-    # Search
+    # Search (LCVK Hamming KNN)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _search(
         index_prefix: str,
         metadata: list[TileMetadata],
-        query_vecs: np.ndarray,
+        query_vecs_f32: np.ndarray,
         k: int,
     ) -> tuple[dict, dict]:
-        from collections import Counter
+        """
+        Binarize queries and run LCVK batch KNN search.
 
-        log.info("Loading FAISS index %s.index for matching ...", index_prefix)
-        index = faiss.read_index(f"{index_prefix}.index")
+        Returns
+        -------
+        vote_map  : dict[int, int]   — number of query anchors that hit each tile
+        best_dist : dict[int, float] — lowest Hamming distance seen for each tile
+                                       (lower = better, unlike FAISS inner-product)
+        """
+        log.info(
+            "Binarizing %d query anchors for LCVK search …", len(query_vecs_f32)
+        )
+        query_bin = LcvkEngine.binarize(query_vecs_f32)  # (N_q, 6) int64
 
-        if torch.cuda.is_available():
-            try:
-                res = faiss.StandardGpuResources()
-                index = faiss.index_cpu_to_gpu(res, 0, index)
-                log.info("Moved FAISS index to GPU for searching.")
-            except (AttributeError, Exception) as e:
-                log.warning("FAISS GPU search not available, falling back to CPU: %s", e)
+        index_bin  = f"{index_prefix}.bin"
+        index_name = Path(index_prefix).stem
+        log.info("Loading LCVK index %s …", index_bin)
 
-        log.info("Executing k-NN search (k=%d) for %d query vectors ...", k, len(query_vecs))
-        dists, ids = index.search(query_vecs, k)
+        with LcvkEngine() as engine:
+            engine.load_index(index_name, index_bin)
+            log.info(
+                "Executing Hamming KNN (k=%d) for %d query vectors …",
+                k, len(query_bin),
+            )
+            # ids, dists: (N_q, k)
+            ids_mat, dists_mat = engine.batch_search(index_name, query_bin, k)
 
-        vote_map: dict[int, int]   = Counter()
+        vote_map:  dict[int, int]   = {}
         best_dist: dict[int, float] = {}
 
-        for row in range(ids.shape[0]):
-            for dist, idx in zip(dists[row], ids[row]):
+        for row in range(ids_mat.shape[0]):
+            for idx, dist in zip(ids_mat[row], dists_mat[row]):
+                idx = int(idx)
                 if idx < 0:
                     continue
                 vote_map[idx] = vote_map.get(idx, 0) + 1
-                if idx not in best_dist or dist > best_dist[idx]:
+                # Lower Hamming distance = closer match
+                if idx not in best_dist or dist < best_dist[idx]:
                     best_dist[idx] = float(dist)
-        log.info("Search retrieved %d unique candidate tiles via voting.", len(vote_map))
+
+        log.info(
+            "Search retrieved %d unique candidate tiles via voting.", len(vote_map)
+        )
         return vote_map, best_dist
 
     @staticmethod
@@ -205,9 +225,12 @@ class LunaPipeline:
         top_k: int,
         min_dist_px: float,
     ) -> list[tuple[int, int, float]]:
-        log.info("Applying NMS (min_dist: %.1f px, max_targets: %d) on %d tiles ...", min_dist_px, top_k, len(ranked_ids))
-        hits: list[tuple[int, int, float]] = []
-        accepted: list[tuple[float, float]] = []
+        log.info(
+            "Applying NMS (min_dist: %.1f px, max_targets: %d) on %d tiles …",
+            min_dist_px, top_k, len(ranked_ids),
+        )
+        hits:     list[tuple[int, int, float]] = []
+        accepted: list[tuple[float, float]]    = []
 
         for idx in ranked_ids:
             meta = metadata[idx]
@@ -224,6 +247,7 @@ class LunaPipeline:
             hits.append((idx, vote_map[idx], best_dist[idx]))
             if len(hits) == top_k:
                 break
+
         log.info("NMS complete. Retained %d non-overlapping hits.", len(hits))
         return hits
 
@@ -235,8 +259,8 @@ class LunaPipeline:
         self,
         product_ids: str | list[str],
         query_dir: str | Path,
-        top_k: int       = FINAL_TOP_K,
-        search_k: int    = SEARCH_K,
+        top_k: int         = FINAL_TOP_K,
+        search_k: int      = SEARCH_K,
         min_dist_px: float = MIN_DIST_PX,
         force_reingest: bool = False,
     ) -> list[CandidateHit]:
@@ -247,37 +271,46 @@ class LunaPipeline:
 
         for pid in product_ids:
             nac_path     = SCRATCH_DIR / f"{pid}.IMG"
-            index_prefix = str(INDEX_DIR / f"faiss_{pid}")
-            index_exists = Path(f"{index_prefix}.index").exists()
+            index_prefix = str(INDEX_DIR / f"lcvk_{pid}")
+            index_exists = Path(f"{index_prefix}.bin").exists()
 
             if not nac_path.exists():
-                log.info("Fetching %s from PDS ...", pid)
+                log.info("Fetching %s from PDS …", pid)
                 nac_path = fetch_nac(pid, dest_dir=SCRATCH_DIR)
 
             if force_reingest or not index_exists:
-                log.info("Ingesting %s ...", pid)
+                log.info("Ingesting %s …", pid)
                 store, metadata = self._ingest(nac_path)
                 metadata_map[pid] = metadata
                 self._save_index(store, nac_path)
                 del store
                 gc.collect()
             else:
-                log.info("Index for %s already exists, loading metadata ...", pid)
-                with open(f"{index_prefix}_meta.pkl", "rb") as f:
+                log.info("LCVK index for %s already exists, loading metadata …", pid)
+                meta_path = f"{index_prefix}_meta.pkl"
+                with open(meta_path, "rb") as f:
                     metadata_map[pid] = pickle.load(f)
 
-        query_vecs = self._encode_queries(query_dir)        # MPS → FAISS normalize
+        query_vecs = self._encode_queries(query_dir)
 
         all_hits: list[CandidateHit] = []
 
         for pid in product_ids:
-            index_prefix = str(INDEX_DIR / f"faiss_{pid}")
+            index_prefix = str(INDEX_DIR / f"lcvk_{pid}")
             metadata     = metadata_map[pid]
 
-            vote_map, best_dist = self._search(index_prefix, metadata, query_vecs, k=search_k)
-            ranked   = sorted(vote_map.keys(), key=lambda i: (-vote_map[i], -best_dist[i]))
-            nms_hits = self._nms(ranked, vote_map, best_dist, metadata,
-                                top_k=top_k, min_dist_px=min_dist_px)
+            vote_map, best_dist = self._search(
+                index_prefix, metadata, query_vecs, k=search_k
+            )
+            # Sort: most votes first; ties broken by lowest Hamming distance
+            ranked   = sorted(
+                vote_map.keys(),
+                key=lambda i: (-vote_map[i], best_dist[i]),
+            )
+            nms_hits = self._nms(
+                ranked, vote_map, best_dist, metadata,
+                top_k=top_k, min_dist_px=min_dist_px,
+            )
 
             for rank, (idx, votes, score) in enumerate(nms_hits, start=len(all_hits) + 1):
                 meta = metadata[idx]
@@ -287,13 +320,13 @@ class LunaPipeline:
                     x_offset=meta.x_offset, y_offset=meta.y_offset,
                 ))
 
-        all_hits.sort(key=lambda h: (-h.votes, -h.score))
+        all_hits.sort(key=lambda h: (-h.votes, h.score))
         for i, h in enumerate(all_hits):
             object.__setattr__(h, "rank", i + 1)
 
         log.info("Scan complete: %d hits across %d NACs.", len(all_hits), len(product_ids))
         return all_hits
-        
+
 
     def refine(
         self,
@@ -307,12 +340,11 @@ class LunaPipeline:
         from luna.models import ESSARefiner
         from luna.config import WEIGHTS_DIR
 
-        log.info("Initializing ESSARefiner stage on %s ...", self._device)
+        log.info("Initializing ESSARefiner stage on %s …", self._device)
         checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
         refiner    = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
 
-
-        log.info("Passing %d candidates to ESSA (score_thr=%.2f) ...", len(hits), score_thr)
+        log.info("Passing %d candidates to ESSA (score_thr=%.2f) …", len(hits), score_thr)
         return refiner.refine(
             hits             = hits,
             out_dir          = output_dir,
