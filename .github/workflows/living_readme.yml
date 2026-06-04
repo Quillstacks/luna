@@ -2,10 +2,7 @@
 name: Living Architecture Mapping
 
 on:
-  push:
-    branches: [ luna_screener_lite ]
-  pull_request:
-    branches: [ luna_screener_lite ]
+  workflow_dispatch:
 
 jobs:
   map-architecture:
