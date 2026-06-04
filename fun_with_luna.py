@@ -46,6 +46,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Skip ISIS preprocessing and reuse existing GeoTIFF")
     parser.add_argument("--force-reingest", action="store_true",
                         help="Rebuild the LCVK index even if one already exists")
+    parser.add_argument("--trace", action="store_true",
+                        help="Enable deep execution profiling with step-by-step timestamps")
     return parser.parse_args()
 
 
@@ -69,7 +71,26 @@ def get_system_info() -> dict:
     }
 
 
-def print_report(refined_hits: List[Any], duration_scan: float, duration_refine: float) -> None:
+def format_duration(seconds: float) -> str:
+    if seconds >= 1.0:
+        return f"{seconds:.2f} s"
+    elif seconds >= 1e-3:
+        return f"{seconds * 1e3:.2f} ms"
+    else:
+        return f"{seconds * 1e6:.2f} µs"
+
+
+STEP_NAMES = {
+    "p1_pytorch_dino_inference": "  └─ PyTorch DINO Inference",
+    "p1_lcvk_polarquant_binarization": "  └─ LCVK PolarQuant Binarization",
+    "p1_native_lcvk_index_scan": "  └─ Native LCVK Index Scan",
+    "p1_cpu_nms_filtering": "  └─ CPU NMS Filtering",
+    "p2_geotiff_loading": "  └─ GeoTIFF Loading",
+    "p2_mask_rcnn_inference": "  └─ Mask R-CNN Inference"
+}
+
+
+def print_report(refined_hits: List[Any], duration_scan: float, duration_refine: float, trace_data: dict = None) -> None:
     total_time = duration_scan + duration_refine
     
     # Title Panel
@@ -115,13 +136,36 @@ def print_report(refined_hits: List[Any], duration_scan: float, duration_refine:
         
     # Performance Summary Panel
     console.print("\n")
-    perf_table = Table(title="Pipeline Performance Summary", show_header=False, border_style="dim", width=60)
-    perf_table.add_column("Stage", style="bold cyan")
-    perf_table.add_column("Duration", style="green", justify="right")
-    
-    perf_table.add_row("DINOv3 Vector Scan Stage", f"{duration_scan:6.2f} seconds")
-    perf_table.add_row("ESSA Refinement Stage", f"{duration_refine:6.2f} seconds")
-    perf_table.add_row("Total Processing Time", f"{total_time:6.2f} seconds")
+    if trace_data:
+        perf_table = Table(title="Pipeline Performance Summary", show_header=True, border_style="dim", width=80)
+        perf_table.add_column("Pipeline Stage / Operational Step", style="bold cyan")
+        perf_table.add_column("Duration", style="green", justify="right")
+        perf_table.add_column("Budget %", style="yellow", justify="right")
+        
+        perf_table.add_row("Phase 1: DINOv3 Vector Scan Stage (Total)", format_duration(duration_scan), f"{(duration_scan/total_time)*100:5.1f}%")
+        
+        for step, duration in trace_data.items():
+            if step.startswith("p1_"):
+                clean_step_name = STEP_NAMES.get(step, f"  └─ {step[3:].replace('_', ' ').title()}")
+                perf_table.add_row(clean_step_name, format_duration(duration), f"{(duration/total_time)*100:5.1f}%", style="dim")
+                
+        perf_table.add_row("Phase 2: ESSA Refinement Stage (Total)", format_duration(duration_refine), f"{(duration_refine/total_time)*100:5.1f}%")
+        
+        for step, duration in trace_data.items():
+            if step.startswith("p2_"):
+                clean_step_name = STEP_NAMES.get(step, f"  └─ {step[3:].replace('_', ' ').title()}")
+                perf_table.add_row(clean_step_name, format_duration(duration), f"{(duration/total_time)*100:5.1f}%", style="dim")
+                
+        perf_table.add_section()
+        perf_table.add_row("Total Pipeline Execution Time", format_duration(total_time), "100.0%", style="bold gold1")
+    else:
+        perf_table = Table(title="Pipeline Performance Summary", show_header=False, border_style="dim", width=60)
+        perf_table.add_column("Stage", style="bold cyan")
+        perf_table.add_column("Duration", style="green", justify="right")
+        
+        perf_table.add_row("DINOv3 Vector Scan Stage", format_duration(duration_scan))
+        perf_table.add_row("ESSA Refinement Stage", format_duration(duration_refine))
+        perf_table.add_row("Total Processing Time", format_duration(total_time))
     
     console.print(perf_table)
     console.print("\n")
@@ -155,11 +199,18 @@ def main() -> None:
     console.print("[bold yellow]>>> Initializing Model Weights & LoRA Adapters...[/]")
     pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
 
+    # Dictionary to collect granular timing metrics
+    trace_data = {} if args.trace else None
+
     # Phase 1: DINOv3 Vector Scan
     console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & LCVK Index Matching...[/]")
     start_scan = time.perf_counter()
-    hits = pipeline.scan(args.nac, query_dir=args.query_dir,
-                         force_reingest=args.force_reingest)
+    hits = pipeline.scan(
+        args.nac,
+        query_dir=args.query_dir,
+        force_reingest=args.force_reingest,
+        trace=trace_data
+    )
     duration_scan = time.perf_counter() - start_scan
 
     # Phase 2: ESSA Refinement
@@ -170,12 +221,13 @@ def main() -> None:
         score_thr=args.score,
         essa_min_score=args.score, 
         output_dir=args.out_dir,
-        skip_preprocess=args.skip_preprocess
+        skip_preprocess=args.skip_preprocess,
+        trace=trace_data
     )
     duration_refine = time.perf_counter() - start_refine
 
     # Output report
-    print_report(refined, duration_scan, duration_refine)
+    print_report(refined, duration_scan, duration_refine, trace_data)
 
 
 if __name__ == "__main__":

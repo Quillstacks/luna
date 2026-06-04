@@ -17,6 +17,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 import gc
 import logging
 import pickle
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,6 +171,7 @@ class LunaPipeline:
         metadata: list[TileMetadata],
         query_vecs_f32: np.ndarray,
         k: int,
+        trace: dict = None,
     ) -> tuple[dict, dict]:
         """
         Binarize queries and run LCVK batch KNN search.
@@ -183,12 +185,16 @@ class LunaPipeline:
         log.info(
             "Binarizing %d query anchors for LCVK search …", len(query_vecs_f32)
         )
+        t_bin_start = time.perf_counter()
         query_bin = LcvkEngine.binarize(query_vecs_f32)  # (N_q, 6) int64
+        if trace is not None:
+            trace["p1_lcvk_polarquant_binarization"] = time.perf_counter() - t_bin_start
 
         index_bin  = f"{index_prefix}.bin"
         index_name = Path(index_prefix).stem
         log.info("Loading LCVK index %s …", index_bin)
 
+        t_scan_start = time.perf_counter()
         with LcvkEngine() as engine:
             engine.load_index(index_name, index_bin)
             log.info(
@@ -197,6 +203,8 @@ class LunaPipeline:
             )
             # ids, dists: (N_q, k)
             ids_mat, dists_mat = engine.batch_search(index_name, query_bin, k)
+        if trace is not None:
+            trace["p1_native_lcvk_index_scan"] = time.perf_counter() - t_scan_start
 
         vote_map:  dict[int, int]   = {}
         best_dist: dict[int, float] = {}
@@ -224,11 +232,13 @@ class LunaPipeline:
         metadata: list[TileMetadata],
         top_k: int,
         min_dist_px: float,
+        trace: dict = None,
     ) -> list[tuple[int, int, float]]:
         log.info(
             "Applying NMS (min_dist: %.1f px, max_targets: %d) on %d tiles …",
             min_dist_px, top_k, len(ranked_ids),
         )
+        t_nms_start = time.perf_counter()
         hits:     list[tuple[int, int, float]] = []
         accepted: list[tuple[float, float]]    = []
 
@@ -248,6 +258,8 @@ class LunaPipeline:
             if len(hits) == top_k:
                 break
 
+        if trace is not None:
+            trace["p1_cpu_nms_filtering"] = time.perf_counter() - t_nms_start
         log.info("NMS complete. Retained %d non-overlapping hits.", len(hits))
         return hits
 
@@ -263,6 +275,7 @@ class LunaPipeline:
         search_k: int      = SEARCH_K,
         min_dist_px: float = MIN_DIST_PX,
         force_reingest: bool = False,
+        trace: dict = None,
     ) -> list[CandidateHit]:
         if isinstance(product_ids, str):
             product_ids = [product_ids]
@@ -291,7 +304,10 @@ class LunaPipeline:
                 with open(meta_path, "rb") as f:
                     metadata_map[pid] = pickle.load(f)
 
+        t_dino_start = time.perf_counter()
         query_vecs = self._encode_queries(query_dir)
+        if trace is not None:
+            trace["p1_pytorch_dino_inference"] = time.perf_counter() - t_dino_start
 
         all_hits: list[CandidateHit] = []
 
@@ -300,7 +316,7 @@ class LunaPipeline:
             metadata     = metadata_map[pid]
 
             vote_map, best_dist = self._search(
-                index_prefix, metadata, query_vecs, k=search_k
+                index_prefix, metadata, query_vecs, k=search_k, trace=trace
             )
             # Sort: most votes first; ties broken by lowest Hamming distance
             ranked   = sorted(
@@ -309,7 +325,7 @@ class LunaPipeline:
             )
             nms_hits = self._nms(
                 ranked, vote_map, best_dist, metadata,
-                top_k=top_k, min_dist_px=min_dist_px,
+                top_k=top_k, min_dist_px=min_dist_px, trace=trace
             )
 
             for rank, (idx, votes, score) in enumerate(nms_hits, start=len(all_hits) + 1):
@@ -335,7 +351,8 @@ class LunaPipeline:
         score_thr: float = 0.5,
         essa_min_score: float = 0.0,
         output_dir: str | Path | None = None,
-        skip_preprocess: bool = False
+        skip_preprocess: bool = False,
+        trace: dict = None,
     ) -> list[RefinedHit]:
         from luna.models import ESSARefiner
         from luna.config import WEIGHTS_DIR
@@ -351,5 +368,6 @@ class LunaPipeline:
             score_thr        = score_thr,
             essa_min_score   = essa_min_score,
             save_debug_plots = output_dir is not None,
-            skip_preprocess  = skip_preprocess
+            skip_preprocess  = skip_preprocess,
+            trace            = trace,
         )

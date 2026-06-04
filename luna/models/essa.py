@@ -14,6 +14,7 @@ Flow per NAC:
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +91,7 @@ class ESSARefiner:
         essa_min_score: float = 0.0,
         skip_preprocess: bool = False,
         save_debug_plots: bool = False,
+        trace: dict = None,
     ) -> list[RefinedHit]:
         # Lazy imports — heavy, only needed at refine time
         from scripts.essa_smoke import (
@@ -136,9 +138,14 @@ class ESSARefiner:
                 
                 downscaled = preprocess_edr(isolated_edr, workdir)
 
+            t_geotiff_start = time.perf_counter()
             with rasterio.open(downscaled) as src:
                 H, W = src.height, src.width
                 log.info("GeoTIFF: %dx%d  CRS=%s", W, H, src.crs)
+                
+                t_geotiff_duration = time.perf_counter() - t_geotiff_start
+                if trace is not None:
+                    trace["p2_geotiff_loading"] = trace.get("p2_geotiff_loading", 0.0) + t_geotiff_duration
 
                 for hit in nac_hits:
                     row, col = lonlat_to_rowcol(src, hit.lon, hit.lat)
@@ -148,7 +155,11 @@ class ESSARefiner:
                                     col - TILE_SIZE // 2))
 
                     tile      = _read_tile(src, r0, c0)
+                    t_infer_start = time.perf_counter()
                     tile_dets = _infer_tile(self._model, tile, self._device, score_thr)
+                    t_infer_duration = time.perf_counter() - t_infer_start
+                    if trace is not None:
+                        trace["p2_mask_rcnn_inference"] = trace.get("p2_mask_rcnn_inference", 0.0) + t_infer_duration
 
                     essa_score, essa_class = 0.0, "none"
                     best_box = None
