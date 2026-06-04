@@ -191,7 +191,7 @@ class ESSARefiner:
                         "box":        best_box,
                     })
 
-        candidates.sort(key=lambda x: (-x["essa_score"], -x["hit"].votes))
+        candidates.sort(key=lambda x: (-x["essa_score"], x["hit"].score))
 
         # --- Post-ESSA spatial NMS -------------------------------------------
         # Multiple LCVK candidate tiles may contain the same pit.  Deduplicate

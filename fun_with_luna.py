@@ -208,6 +208,8 @@ def main() -> None:
     hits = pipeline.scan(
         args.nac,
         query_dir=args.query_dir,
+        top_k=150,
+        search_k=200,
         force_reingest=args.force_reingest,
         trace=trace_data
     )

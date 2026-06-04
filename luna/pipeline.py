@@ -318,10 +318,10 @@ class LunaPipeline:
             vote_map, best_dist = self._search(
                 index_prefix, metadata, query_vecs, k=search_k, trace=trace
             )
-            # Sort: most votes first; ties broken by lowest Hamming distance
+            # Sort: lowest Hamming distance first
             ranked   = sorted(
                 vote_map.keys(),
-                key=lambda i: (-vote_map[i], best_dist[i]),
+                key=lambda i: best_dist[i],
             )
             nms_hits = self._nms(
                 ranked, vote_map, best_dist, metadata,
@@ -336,7 +336,7 @@ class LunaPipeline:
                     x_offset=meta.x_offset, y_offset=meta.y_offset,
                 ))
 
-        all_hits.sort(key=lambda h: (-h.votes, h.score))
+        all_hits.sort(key=lambda h: h.score)
         for i, h in enumerate(all_hits):
             object.__setattr__(h, "rank", i + 1)
 

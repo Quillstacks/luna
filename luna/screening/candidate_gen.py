@@ -172,6 +172,7 @@ class DataIngestor:
                   unit="tile", dynamic_ncols=True, smoothing=0.0) as pbar:
             while fetched < total_tiles:
                 batch, offsets = self.screener.get_batch()
+                raw_count = len(batch)
 
                 meta_batch = [
                     TileMetadata(
@@ -186,10 +187,16 @@ class DataIngestor:
                     for x, y in offsets
                 ]
 
-                embeddings = self._safe_encode(batch)
-                fetched   += len(embeddings)
-                pbar.update(len(embeddings))
-                yield embeddings, meta_batch
+                # Filter out completely blank/invalid background tiles (max == 0)
+                valid_indices = [i for i in range(raw_count) if batch[i].max() > 0]
+                if valid_indices:
+                    valid_batch = batch[valid_indices]
+                    valid_meta  = [meta_batch[i] for i in valid_indices]
+                    embeddings  = self._safe_encode(valid_batch)
+                    yield embeddings, valid_meta
+
+                fetched   += raw_count
+                pbar.update(raw_count)
 
         del stripe
 
