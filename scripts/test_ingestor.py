@@ -11,8 +11,8 @@ import numpy as np
 from luna.io.pds_fetch import fetch_nac
 from luna.models.dinov3 import DINOEncoder
 from luna.screening import DataIngestor
-from luna.storage import LcvkLocalStore
-from luna.screening.lcvk import LcvkEngine
+from luna.storage import PithosStore
+from luna.screening.pithos import PithosMIDB
 from luna.config import SCRATCH_DIR, INDEX_DIR, HF_REPO_ID, DINO_DIM, TILE_SIZE, STRIDE, MAX_BATCH_SIZE
 
 logging.basicConfig(
@@ -59,12 +59,11 @@ def load_query_vector(encoder: DINOEncoder, query_path: Path) -> np.ndarray | No
 
 
 def run_sanity_check(index_path: str, q_vec: np.ndarray) -> None:
-    bin_path = index_path.replace(".index", ".bin").replace("faiss_", "lcvk_")
-    q_bin = LcvkEngine.binarize(q_vec)
-    with LcvkEngine() as engine:
-        engine.load_index("test", bin_path)
-        ids, dists = engine.batch_search("test", q_bin, k=10)
-    log.info("Top-10 LCVK Hamming hits:")
+    bin_path = index_path.replace(".index", ".bin").replace("faiss_", "pithos_")
+    with PithosMIDB() as db:
+        db.load_index("test", bin_path)
+        ids, dists = db.batch_search("test", q_vec, k=10)
+    log.info("Top-10 Pithos Hamming hits:")
     for rank, (idx, dist) in enumerate(zip(ids[0], dists[0]), start=1):
         log.info("  Rank %02d | Hamming %3d | id %d", rank, dist, idx)
 
@@ -85,7 +84,7 @@ def main() -> None:
         log.info("── Ingesting %s ──", nac_path.name)
 
         # Fresh store + ingestor per NAC — prevents cumulative memory build-up
-        store    = LcvkLocalStore()
+        store    = PithosStore()
         ingestor = DataIngestor(model=encoder, store=store, max_batch_size=MAX_BATCH_SIZE)
 
         t0    = perf_counter()
@@ -103,7 +102,7 @@ def main() -> None:
         gc.collect()
 
 
-        prefix = str(INDEX_DIR / f"lcvk_{nac_path.stem}")
+        prefix = str(INDEX_DIR / f"pithos_{nac_path.stem}")
         Path(prefix).parent.mkdir(parents=True, exist_ok=True)
         store.save_to_disk(prefix)
         log.info("  Index saved → %s", prefix)
@@ -124,7 +123,7 @@ def main() -> None:
              total_tiles, total_elapsed, total_tiles / total_elapsed)
     log.info("═" * 60)
 
-    last_index = str(INDEX_DIR / f"lcvk_{nac_paths[-1].stem}.index")
+    last_index = str(INDEX_DIR / f"pithos_{nac_paths[-1].stem}.index")
     if q_vec is not None and os.path.exists(last_index):
         run_sanity_check(last_index, q_vec)
 

@@ -7,7 +7,7 @@ import pickle
 from pathlib import Path
 import numpy as np
 from luna import LunaPipeline
-from luna.screening.lcvk import LcvkEngine
+from luna.screening.pithos import PithosMIDB
 
 def main():
     pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
@@ -18,8 +18,8 @@ def main():
     query_paths = sorted(query_dir.glob("*.npy"))
     query_names = [p.stem for p in query_paths]
     
-    # 2. Run the LCVK scan manually to trace the matching template names
-    index_prefix = f"data/_scratch/indices/lcvk_{nac}"
+    # 2. Run the Pithos scan manually to trace the matching template names
+    index_prefix = f"data/_scratch/indices/pithos_{nac}"
     print(f"Loading metadata for {nac}...")
     with open(f"{index_prefix}_meta.pkl", "rb") as f:
         metadata = pickle.load(f)
@@ -27,18 +27,15 @@ def main():
     print("Encoding query anchors...")
     query_vecs = pipeline._encode_queries(query_dir)
     
-    print("Executing Native LCVK batch search...")
-    # Binarize queries
-    query_bin = LcvkEngine.binarize(query_vecs)
-    
+    print("Executing Native Pithos batch search...")
     vote_map = {}
     best_dist = {}
     best_query_idx = {} # maps tile index -> query index
     
-    with LcvkEngine() as engine:
-        engine.load_index(nac, f"{index_prefix}.bin")
+    with PithosMIDB() as db:
+        db.load_index(nac, f"{index_prefix}.bin")
         # k = 1000 search
-        ids_mat, dists_mat = engine.batch_search(nac, query_bin, k=1000)
+        ids_mat, dists_mat = db.batch_search(nac, query_vecs, k=1000)
         
     for q_idx in range(ids_mat.shape[0]):
         for idx, dist in zip(ids_mat[q_idx], dists_mat[q_idx]):
@@ -57,7 +54,7 @@ def main():
     print("Applying spatial NMS filtering (512px)...")
     nms_hits = pipeline._nms(ranked, vote_map, best_dist, metadata, top_k=100, min_dist_px=512.0)
     
-    print(f"\n--- Top 30 LCVK Retrieval Matches (ESSA bypassed) ---")
+    print(f"\n--- Top 30 Pithos Retrieval Matches (ESSA bypassed) ---")
     print(f"{'Rank':<5} | {'DINO Dist':<10} | {'Votes':<6} | {'Coords (Lon, Lat)':<25} | {'Best Matching Feature Template':<35}")
     print("-" * 95)
     

@@ -122,8 +122,8 @@ class LunaPipeline:
         elif self._device == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
-        prefix = str(INDEX_DIR / f"lcvk_{nac_path.stem}")
-        log.info("Compiling LCVK PLAN index → %s.bin …", prefix)
+        prefix = str(INDEX_DIR / f"pithos_{nac_path.stem}")
+        log.info("Compiling Pithos PLAN index → %s.bin …", prefix)
         store.save_to_disk(prefix)
         return Path(prefix)
 
@@ -162,7 +162,7 @@ class LunaPipeline:
         return stacked
 
     # ------------------------------------------------------------------
-    # Search (LCVK Hamming KNN)
+    # Search (Pithos Hamming KNN)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -174,7 +174,7 @@ class LunaPipeline:
         trace: dict = None,
     ) -> tuple[dict, dict]:
         """
-        Binarize queries and run LCVK batch KNN search.
+        Execute Pithos batch KNN search on raw float32 queries.
 
         Returns
         -------
@@ -277,7 +277,7 @@ class LunaPipeline:
 
         for pid in product_ids:
             nac_path     = SCRATCH_DIR / f"{pid}.IMG"
-            index_prefix = str(INDEX_DIR / f"lcvk_{pid}")
+            index_prefix = str(INDEX_DIR / f"pithos_{pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
 
             if not nac_path.exists():
@@ -292,7 +292,7 @@ class LunaPipeline:
                 del store
                 gc.collect()
             else:
-                log.info("LCVK index for %s already exists, loading metadata …", pid)
+                log.info("Pithos index for %s already exists, loading metadata …", pid)
                 meta_path = f"{index_prefix}_meta.pkl"
                 with open(meta_path, "rb") as f:
                     metadata_map[pid] = pickle.load(f)
@@ -305,7 +305,7 @@ class LunaPipeline:
         all_hits: list[CandidateHit] = []
 
         for pid in product_ids:
-            index_prefix = str(INDEX_DIR / f"lcvk_{pid}")
+            index_prefix = str(INDEX_DIR / f"pithos_{pid}")
             metadata     = metadata_map[pid]
 
             vote_map, best_dist = self._search(

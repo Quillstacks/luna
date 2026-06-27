@@ -1,10 +1,10 @@
 from .candidate_gen import DataIngestor, ScreenerEngine
-from .lcvk import LcvkEngine
+from .pithos import PithosMIDB
 from .protocols import VectorStore, TileMetadata, SearchResult
 
 __all__ = [
     "DataIngestor",
-    "LcvkEngine",
+    "PithosMIDB",
     "VectorStore",
     "TileMetadata",
     "SearchResult",

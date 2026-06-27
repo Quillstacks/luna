@@ -1,4 +1,4 @@
 from .faiss_store import FaissLocalStore
-from .lcvk_store import LcvkLocalStore
+from .pithos_store import PithosStore
 
-__all__ = ["FaissLocalStore", "LcvkLocalStore"]
+__all__ = ["FaissLocalStore", "PithosStore"]

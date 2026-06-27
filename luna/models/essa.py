@@ -45,7 +45,7 @@ class RefinedHit:
     dino_score: float
     essa_score: float
     essa_class: str
-    lon: float        # LCVK candidate tile centre (coarse)
+    lon: float        # Pithos candidate tile centre (coarse)
     lat: float
     essa_lon: float   # ESSA detection centroid (accurate)
     essa_lat: float
@@ -194,7 +194,7 @@ class ESSARefiner:
         candidates.sort(key=lambda x: (-x["essa_score"], x["hit"].score))
 
         # --- Post-ESSA spatial NMS -------------------------------------------
-        # Multiple LCVK candidate tiles may contain the same pit.  Deduplicate
+        # Multiple Pithos candidate tiles may contain the same pit.  Deduplicate
         # by ESSA centroid proximity: keep only the highest-scoring hit within
         # a 200 m radius (≈ 133 px at 1.5 m/px).
         _NMS_DIST_DEG = 200 / 1_737_400 * (180 / 3.14159265)  # ~0.0066°

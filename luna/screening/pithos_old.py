@@ -1,13 +1,13 @@
 """
-luna.screening.lcvk
+luna.screening.pithos
 ~~~~~~~~~~~~~~~~~~~
-Python wrapper for the LCVK AOT-compiled native vector kernel.
+Python wrapper for the Pithos AOT-compiled native vector kernel.
 
 The native shared libraries are bundled under:
-    third_party/lcvk/lunar_core.dylib   (macOS / Apple Silicon)
-    third_party/lcvk/liblunar_core.so   (Linux / DGX Spark)
+    third_party/pithos/libpithos-macos-aarch64.dylib   (macOS / Apple Silicon)
+    third_party/pithos/libpithos-linux-x86_64.so        (Linux / DGX Spark)
 
-No dependency on the lcvk source repository is required at runtime.
+No dependency on the pithos source repository is required at runtime.
 """
 from __future__ import annotations
 
@@ -22,20 +22,20 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Resolve bundled native library path
 # ---------------------------------------------------------------------------
-_THIRD_PARTY = Path(__file__).resolve().parents[2] / "third_party" / "lcvk"
+_THIRD_PARTY = Path(__file__).resolve().parents[2] / "third_party" / "pithos"
 
 def _find_lib() -> Path:
     system = platform.system()
     candidates = (
-        [_THIRD_PARTY / "lunar_core.dylib", _THIRD_PARTY / "liblunar_core.so"]
+        [_THIRD_PARTY / "libpithos-macos-aarch64.dylib", _THIRD_PARTY / "libpithos.dylib"]
         if system == "Darwin"
-        else [_THIRD_PARTY / "liblunar_core.so", _THIRD_PARTY / "lunar_core.dylib"]
+        else [_THIRD_PARTY / "libpithos-linux-x86_64.so", _THIRD_PARTY / "libpithos.so"]
     )
     for p in candidates:
         if p.exists():
             return p
     raise FileNotFoundError(
-        f"LCVK native library not found. Expected one of:\n"
+        f"Pithos native library not found. Expected one of:\n"
         + "\n".join(f"  {p}" for p in candidates)
     )
 
@@ -101,39 +101,37 @@ class _GraalIsolateThread(ctypes.Structure):
 
 
 # ---------------------------------------------------------------------------
-# LcvkEngine
+# PithosMIDB
 # ---------------------------------------------------------------------------
-class LcvkEngine:
+class PithosMIDB:
     """
-    Python interface to the LCVK AOT-compiled Hamming-distance vector kernel.
+    Python interface to the Pithos AOT-compiled Hamming-distance vector kernel.
 
     Usage (search)::
 
-        from luna.screening.lcvk import LcvkEngine
+        from luna.screening.pithos import PithosMIDB
 
-        with LcvkEngine() as engine:
-            engine.load_index("lunar", "/path/to/lunar.bin")
-            queries = LcvkEngine.binarize(float32_embeddings)
-            ids, distances = engine.batch_search("lunar", queries, k=100)
+        with PithosMIDB() as db:
+            db.load_index("lunar", "/path/to/lunar.bin")
+            ids, distances = db.batch_search("lunar", float32_embeddings, k=100)
 
     Usage (index build)::
 
-        with LcvkEngine() as engine:
+        with PithosMIDB() as db:
             ids = np.arange(n, dtype=np.int64)
-            vecs = LcvkEngine.binarize(embeddings)
-            engine.build_index("/path/to/out.bin", planet_id=1,
-                               planet_radius=1_737_400, ids=ids, vectors=vecs)
+            db.build_index("/path/to/out.bin", planet_id=1,
+                           planet_radius=1_737_400, ids=ids, vectors=embeddings)
     """
 
-    #: Moon mean radius in metres — passed to vdb_compile_index_file.
+    #: Moon mean radius in metres.
     MOON_RADIUS: int = 1_737_400
-    #: Planet-ID byte for the Moon in the LCVK planet registry.
+    #: Planet-ID byte for the Moon.
     MOON_ID: int = 1
 
     def __init__(self, lib_path: str | os.PathLike | None = None) -> None:
         path = Path(lib_path) if lib_path is not None else _find_lib()
         if not path.exists():
-            raise FileNotFoundError(f"LCVK native library not found at: {path}")
+            raise FileNotFoundError(f"Pithos native library not found at: {path}")
 
         self.lib = ctypes.CDLL(str(path))
         self._isolate = ctypes.POINTER(_GraalIsolate)()
@@ -149,7 +147,7 @@ class LcvkEngine:
 
         status = self.lib.vdb_init(self._thread)
         if status != 0:
-            raise RuntimeError("Failed to initialize LCVK DB engine.")
+            raise RuntimeError("Failed to initialize Pithos DB engine.")
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -171,7 +169,7 @@ class LcvkEngine:
         Returns
         -------
         np.ndarray, shape (N, 6), dtype int64
-            Packed binary vectors ready for LCVK registers.
+            Packed binary vectors ready for Pithos registers.
         """
         emb = np.asarray(embeddings, dtype=np.float32)
 

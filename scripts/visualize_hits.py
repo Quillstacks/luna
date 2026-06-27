@@ -127,7 +127,7 @@ def render_hits(hits, tif_path: Path, out_dir: Path, nac_id: str):
     for ax in axes_flat[n:]:
         ax.set_visible(False)
 
-    fig.suptitle(f"LCVK + ESSA — {nac_id}  ({n} candidates)",
+    fig.suptitle(f"Pithos + ESSA — {nac_id}  ({n} candidates)",
                  color="white", fontsize=12, fontweight="bold", y=1.01)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
 

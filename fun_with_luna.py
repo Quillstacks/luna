@@ -45,7 +45,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--skip-preprocess", action="store_true", 
                         help="Skip ISIS preprocessing and reuse existing GeoTIFF")
     parser.add_argument("--force-reingest", action="store_true",
-                        help="Rebuild the LCVK index even if one already exists")
+                        help="Rebuild the Pithos index even if one already exists")
     parser.add_argument("--trace", action="store_true",
                         help="Enable deep execution profiling with step-by-step timestamps")
     return parser.parse_args()
@@ -202,7 +202,7 @@ def main() -> None:
     trace_data = {} if args.trace else None
 
     # Phase 1: DINOv3 Vector Scan
-    console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & LCVK Index Matching...[/]")
+    console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & Pithos Index Matching...[/]")
     start_scan = time.perf_counter()
     hits = pipeline.scan(
         args.nac,

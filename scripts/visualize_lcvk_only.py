@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
 from luna import LunaPipeline
-from luna.screening.lcvk import LcvkEngine
+from luna.screening.pithos import PithosMIDB
 
 MOON_GEOG = "+proj=longlat +a=1737400 +b=1737400 +no_defs"
 CROP_SIZE = 512 # Size of crop around the hit coordinate
@@ -40,20 +40,19 @@ def main():
     query_paths = sorted(query_dir.glob("*.npy"))
     query_names = [p.stem for p in query_paths]
     
-    index_prefix = f"data/_scratch/indices/lcvk_{nac}"
+    index_prefix = f"data/_scratch/indices/pithos_{nac}"
     with open(f"{index_prefix}_meta.pkl", "rb") as f:
         metadata = pickle.load(f)
         
     query_vecs = pipeline._encode_queries(query_dir)
-    query_bin = LcvkEngine.binarize(query_vecs)
     
     vote_map = {}
     best_dist = {}
     best_query_idx = {}
     
-    with LcvkEngine() as engine:
-        engine.load_index(nac, f"{index_prefix}.bin")
-        ids_mat, dists_mat = engine.batch_search(nac, query_bin, k=1000)
+    with PithosMIDB() as db:
+        db.load_index(nac, f"{index_prefix}.bin")
+        ids_mat, dists_mat = db.batch_search(nac, query_vecs, k=1000)
         
     for q_idx in range(ids_mat.shape[0]):
         for idx, dist in zip(ids_mat[q_idx], dists_mat[q_idx]):
@@ -132,13 +131,13 @@ def main():
         for ax in axes_flat[len(nms_hits):]:
             ax.axis("off")
             
-    plt.suptitle(f"LCVK Top 50 Retrieval Matches for {nac} (Distance-based)", color="white", fontsize=18, fontweight="bold", y=0.99)
+    plt.suptitle(f"Pithos Top 50 Retrieval Matches for {nac} (Distance-based)", color="white", fontsize=18, fontweight="bold", y=0.99)
     plt.tight_layout()
     
     # Save to the local temp directory as SVG
     out_dir = Path("temp")
     out_dir.mkdir(exist_ok=True)
-    out_path = out_dir / "lcvk_only_top50.svg"
+    out_path = out_dir / "pithos_only_top50.svg"
     fig.savefig(out_path, format="svg", bbox_inches="tight", facecolor="#0d0d0d")
     plt.close(fig)
     print(f"Visualization saved to: {out_path}")
