@@ -8,7 +8,7 @@ The native shared library is bundled under:
     third_party/pithos/libpithos-macos-aarch64.dylib   (macOS / Apple Silicon)
     third_party/pithos/libpithos-linux-x86_64.so        (Linux / DGX Spark)
 
-Key difference from the old LcvkEngine:
+Key difference from the old PithosEngine:
   - All public methods accept **raw float32 vectors** (N, 384).
     The native library handles quantization internally.
   - The class is a **Singleton** — one GraalVM isolate per process.
@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Tuple
 
 import numpy as np
+
+from luna.exceptions import IndexError, SearchError, DeltaError, DeltaFullError
 
 log = logging.getLogger(__name__)
 
@@ -183,12 +185,12 @@ class PithosMIDB:
                 ctypes.byref(self.thread),
             )
         if status != 0:
-            raise RuntimeError(f"graal_create_isolate failed (code {status}).")
+            raise IndexError(f"graal_create_isolate failed (code {status}).")
 
         with _suppress_stderr():
             status = self.lib.vdb_init(self.thread)
         if status != 0:
-            raise RuntimeError(f"vdb_init failed (code {status}).")
+            raise IndexError(f"vdb_init failed (code {status}).")
 
         log.info("Pithos isolate initialized successfully.")
 
@@ -269,6 +271,54 @@ class PithosMIDB:
 
         lib.vdb_close.argtypes = [P]
         lib.vdb_close.restype  = ctypes.c_int
+
+        # Delta Buffer API
+        lib.vdb_create_delta_buffer.argtypes = [P, ctypes.c_char_p, ctypes.c_int]
+        lib.vdb_create_delta_buffer.restype  = ctypes.c_int
+
+        lib.vdb_insert.argtypes = [
+            P, ctypes.c_char_p,
+            ctypes.c_longlong,      # id (int64)
+            ctypes.c_void_p,        # vector (float32*)
+        ]
+        lib.vdb_insert.restype  = ctypes.c_int
+
+        lib.vdb_delete_from_delta.argtypes = [P, ctypes.c_char_p, ctypes.c_longlong]
+        lib.vdb_delete_from_delta.restype  = ctypes.c_int
+
+        lib.vdb_delta_size.argtypes = [P, ctypes.c_char_p]
+        lib.vdb_delta_size.restype  = ctypes.c_longlong
+
+        lib.vdb_needs_flush.argtypes = [P, ctypes.c_char_p]
+        lib.vdb_needs_flush.restype  = ctypes.c_int
+
+        lib.vdb_search_merged.argtypes = [
+            P, ctypes.c_char_p,
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        lib.vdb_search_merged.restype = ctypes.c_int
+
+        lib.vdb_backup_delta.argtypes = [P, ctypes.c_char_p, ctypes.c_char_p]
+        lib.vdb_backup_delta.restype  = ctypes.c_int
+
+        lib.vdb_restore_delta.argtypes = [
+            P, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int
+        ]
+        lib.vdb_restore_delta.restype  = ctypes.c_int
+
+        lib.vdb_get_tier_address.argtypes = [
+            P, ctypes.c_char_p, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        lib.vdb_get_tier_address.restype  = ctypes.c_int
+
+        lib.vdb_transform_and_quantize.argtypes = [
+            P, ctypes.c_char_p,
+            ctypes.c_void_p, ctypes.c_int,
+            ctypes.c_void_p,
+        ]
+        lib.vdb_transform_and_quantize.restype = ctypes.c_int
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -351,7 +401,7 @@ class PithosMIDB:
                 ctypes.c_int(q_mode),
             )
         if status != 0:
-            raise RuntimeError(f"vdb_compile_index_file failed (code {status}).")
+            raise IndexError(f"vdb_compile_index_file failed (code {status}).")
 
     def load_index(
         self,
@@ -384,14 +434,14 @@ class PithosMIDB:
             with _suppress_stderr():
                 status = self.lib.vdb_load_index(self.thread, name_b, path_b)
         if status != 0:
-            raise RuntimeError(f"vdb_load_index failed (code {status}).")
+            raise IndexError(f"vdb_load_index failed (code {status}).")
 
     def drop_index(self, index_name: str) -> None:
         """Unmap and release an off-heap index."""
         with _suppress_stderr():
             status = self.lib.vdb_drop_index(self.thread, index_name.encode())
         if status != 0:
-            raise RuntimeError(f"vdb_drop_index failed (code {status}).")
+            raise IndexError(f"vdb_drop_index failed (code {status}).")
 
     # ------------------------------------------------------------------
     # Search
@@ -432,7 +482,7 @@ class PithosMIDB:
                 out_dists.ctypes.data_as(ctypes.c_void_p),
             )
         if status != 0:
-            raise RuntimeError(f"vdb_batch_search failed (code {status}).")
+            raise SearchError(f"vdb_batch_search failed (code {status}).")
 
         return out_ids.reshape(n, k), out_dists.reshape(n, k)
 
@@ -469,6 +519,135 @@ class PithosMIDB:
                 ctypes.c_int(queries.shape[0]),
                 voting_mask.ctypes.data_as(ctypes.c_void_p),
             ))
+
+    # ------------------------------------------------------------------
+    # Delta Buffer API
+    # ------------------------------------------------------------------
+
+    def create_delta_buffer(self, index_name: str, capacity: int) -> None:
+        """Create an in-memory delta buffer for the named index."""
+        with _suppress_stderr():
+            status = self.lib.vdb_create_delta_buffer(
+                self.thread, index_name.encode(), ctypes.c_int(capacity)
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_create_delta_buffer failed (code {status}).")
+
+    def insert(self, index_name: str, id: int, vector: np.ndarray) -> None:
+        """Insert a float32 vector into the delta buffer for the named index."""
+        vec_c = np.ascontiguousarray(vector, dtype=np.float32)
+        with _suppress_stderr():
+            status = self.lib.vdb_insert(
+                self.thread,
+                index_name.encode(),
+                ctypes.c_longlong(id),
+                vec_c.ctypes.data_as(ctypes.c_void_p),
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_insert failed (code {status}).")
+
+    def delete_from_delta(self, index_name: str, id: int) -> None:
+        """Delete an entry from the delta buffer for the named index."""
+        with _suppress_stderr():
+            status = self.lib.vdb_delete_from_delta(
+                self.thread, index_name.encode(), ctypes.c_longlong(id)
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_delete_from_delta failed (code {status}).")
+
+    def delta_size(self, index_name: str) -> int:
+        """Return the number of entries in the delta buffer for the named index."""
+        with _suppress_stderr():
+            return int(self.lib.vdb_delta_size(self.thread, index_name.encode()))
+
+    def needs_flush(self, index_name: str) -> bool:
+        """Check if the delta buffer for the named index needs to be flushed."""
+        with _suppress_stderr():
+            return bool(self.lib.vdb_needs_flush(self.thread, index_name.encode()))
+
+    def search_merged(
+        self, index_name: str, queries: np.ndarray, k: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """KNN search over main index + delta buffer together."""
+        n = queries.shape[0]
+        queries_c = np.ascontiguousarray(queries, dtype=np.float32)
+        out_ids = np.empty(n * k, dtype=np.int64)
+        out_dists = np.empty(n * k, dtype=np.int32)
+
+        with _suppress_stderr():
+            status = self.lib.vdb_search_merged(
+                self.thread,
+                index_name.encode(),
+                queries_c.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(n),
+                ctypes.c_int(k),
+                out_ids.ctypes.data_as(ctypes.c_void_p),
+                out_dists.ctypes.data_as(ctypes.c_void_p),
+            )
+        if status != 0:
+            raise SearchError(f"vdb_search_merged failed (code {status}).")
+
+        return out_ids.reshape(n, k), out_dists.reshape(n, k)
+
+    def backup_delta(self, index_name: str, path: str | Path) -> None:
+        """Backup the delta buffer to disk."""
+        path_b = str(path).encode()
+        with _suppress_stderr():
+            status = self.lib.vdb_backup_delta(
+                self.thread, index_name.encode(), path_b
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_backup_delta failed (code {status}).")
+
+    def restore_delta(
+        self, index_name: str, path: str | Path, capacity: int
+    ) -> None:
+        """Restore a delta buffer from disk."""
+        path_b = str(path).encode()
+        with _suppress_stderr():
+            status = self.lib.vdb_restore_delta(
+                self.thread, index_name.encode(), path_b, ctypes.c_int(capacity)
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_restore_delta failed (code {status}).")
+
+    def get_tier_address(
+        self, index_name: str, tier: int
+    ) -> Tuple[int, int]:
+        """Return byte offset and size of a Matryoshka tier."""
+        offset = ctypes.c_longlong(0)
+        size = ctypes.c_longlong(0)
+        with _suppress_stderr():
+            status = self.lib.vdb_get_tier_address(
+                self.thread,
+                index_name.encode(),
+                ctypes.c_int(tier),
+                ctypes.byref(offset),
+                ctypes.byref(size),
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_get_tier_address failed (code {status}).")
+        return int(offset.value), int(size.value)
+
+    def transform_and_quantize(
+        self, index_name: str, vectors: np.ndarray
+    ) -> np.ndarray:
+        """Transform and quantize float32 vectors without search."""
+        n = vectors.shape[0]
+        vectors_c = np.ascontiguousarray(vectors, dtype=np.float32)
+        out_ids = np.empty(n, dtype=np.int64)
+
+        with _suppress_stderr():
+            status = self.lib.vdb_transform_and_quantize(
+                self.thread,
+                index_name.encode(),
+                vectors_c.ctypes.data_as(ctypes.c_void_p),
+                ctypes.c_int(n),
+                out_ids.ctypes.data_as(ctypes.c_void_p),
+            )
+        if status != 0:
+            raise DeltaError(f"vdb_transform_and_quantize failed (code {status}).")
+        return out_ids
 
     # ------------------------------------------------------------------
     # Metadata & tuning
@@ -509,7 +688,7 @@ class PithosMIDB:
                 ctypes.byref(tiers_cnt),
             )
         if status != 0:
-            raise RuntimeError(f"vdb_get_info failed (code {status}).")
+            raise IndexError(f"vdb_get_info failed (code {status}).")
         return {
             "dimension":     dim.value,
             "size":          size.value,

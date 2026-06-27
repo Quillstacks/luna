@@ -5,7 +5,7 @@ VectorStore implementation backed by the Pithos MIDB native library.
 
 Vectors are buffered in RAM as raw float32 and compiled to an off-heap
 ``.bin`` index on ``save_to_disk``.  Record IDs are sequential so they
-map directly to the metadata list — identical to the old LcvkLocalStore.
+map directly to the metadata list.
 """
 from __future__ import annotations
 

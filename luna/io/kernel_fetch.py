@@ -13,6 +13,8 @@ cache hits.
 from __future__ import annotations
 
 import logging
+
+from luna.exceptions import IndexError
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -79,7 +81,7 @@ def _fetch_metakernel(year: int, root: Path, session: requests.Session) -> Path:
             out.write_bytes(r.content)
             log.info("fetched metakernel %s", name)
             return out
-    raise RuntimeError(f"no metakernel found on NAIF for year {year}")
+    raise IndexError(f"no metakernel found on NAIF for year {year}")
 
 
 def _parse_kernels_to_load(mk_path: Path) -> list[str]:

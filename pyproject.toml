@@ -42,5 +42,12 @@ dev = [
 where = ["."]
 include = ["luna", "luna.*"]
 
+[tool.setuptools.package-data]
+luna = [
+    "../third_party/pithos/*.dylib",
+    "../third_party/pithos/*.so",
+    "py.typed",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["luna/tests"]

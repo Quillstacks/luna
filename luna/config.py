@@ -6,7 +6,10 @@ hardcoding values at call sites.
 
 from __future__ import annotations
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
+
+import numpy as np
 
 log = logging.getLogger("luna.config")
 
@@ -94,3 +97,17 @@ SEARCH_K    = 1000    # candidates per anchor query
 FINAL_TOP_K = 100     # hits returned after NMS
 MIN_DIST_PX = 512.0   # NMS suppression radius (px)
 ZOOM_SIZE   = 256     # crop size for result visualisation (px)
+
+
+@dataclass
+class LunaConfig:
+    tile_size: int = TILE_SIZE
+    stride: int = STRIDE
+    search_k: int = SEARCH_K
+    final_top_k: int = FINAL_TOP_K
+    min_dist_px: float = MIN_DIST_PX
+    max_batch_size: int = MAX_BATCH_SIZE
+    index_dir: Path = field(default_factory=lambda: INDEX_DIR)
+    scratch_dir: Path = field(default_factory=lambda: SCRATCH_DIR)
+    pithos_tiers: np.ndarray = field(default_factory=lambda: np.array([64, 128, 256, 384], dtype=np.int32))
+    energy_budget: float = 0.85

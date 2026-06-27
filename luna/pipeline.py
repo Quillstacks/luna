@@ -20,6 +20,7 @@ import pickle
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Literal, overload, Union
 
 import numpy as np
 import torch
@@ -27,7 +28,7 @@ import torch
 from luna.config import (
     DINO_DIM, FINAL_TOP_K, INDEX_DIR, LROC_VALID_MIN,
     MAX_BATCH_SIZE, MIN_DIST_PX, SCRATCH_DIR, SEARCH_K,
-    STRIDE, TILE_SIZE,
+    STRIDE, TILE_SIZE, LunaConfig,
 )
 from luna.io.pds_fetch import fetch_nac
 from luna.screening.candidate_gen import DataIngestor
@@ -35,6 +36,7 @@ from luna.screening.pithos import PithosMIDB
 from luna.screening.protocols import TileMetadata
 from luna.storage.pithos_store import PithosStore
 from luna.models import RefinedHit
+from luna.metrics import MetricsReport
 
 log = logging.getLogger(__name__)
 
@@ -48,11 +50,23 @@ class CandidateHit:
     rank: int
     product_id: str
     votes: int
-    score: float          # best Hamming distance (lower = better match)
+    score: float
     lon: float
     lat: float
     x_offset: int
     y_offset: int
+
+    def _repr_html_(self) -> str:
+        return (
+            f"<table><tr><th colspan='2' style='text-align:left'>CandidateHit</th></tr>"
+            f"<tr><td>Rank</td><td>{self.rank}</td></tr>"
+            f"<tr><td>Product ID</td><td>{self.product_id}</td></tr>"
+            f"<tr><td>Votes</td><td>{self.votes}</td></tr>"
+            f"<tr><td>Score</td><td>{self.score:.2f}</td></tr>"
+            f"<tr><td>Position</td><td>({self.lon:.4f}, {self.lat:.4f})</td></tr>"
+            f"<tr><td>Offset</td><td>({self.x_offset}, {self.y_offset})</td></tr>"
+            f"</table>"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +74,10 @@ class CandidateHit:
 # ---------------------------------------------------------------------------
 
 class LunaPipeline:
-    def __init__(self, encoder, device: str) -> None:
+    def __init__(self, encoder, device: str, config: LunaConfig | None = None) -> None:
         self._encoder = encoder
         self._device  = device
+        self._config  = config or LunaConfig()
 
     # ------------------------------------------------------------------
     # Construction
@@ -74,6 +89,7 @@ class LunaPipeline:
         repo_id: str,
         matryoshka_dim: int = DINO_DIM,
         device: str | None = None,
+        config: LunaConfig | None = None,
     ) -> LunaPipeline:
         from luna.models.dinov3 import DINOEncoder
         if device is None:
@@ -82,28 +98,32 @@ class LunaPipeline:
                 "cuda" if torch.cuda.is_available()          else
                 "cpu"
             )
-        log.info("Loading encoder from %s on %s (Batch Size: %d) …", repo_id, device, MAX_BATCH_SIZE)
+        batch_size = config.max_batch_size if config else MAX_BATCH_SIZE
+        log.info("Loading encoder from %s on %s (Batch Size: %d) …", repo_id, device, batch_size)
         encoder = DINOEncoder(
             lora_dir          = repo_id,
             base_weights_path = repo_id,
             matryoshka_dim    = matryoshka_dim,
             device            = device,
         )
-        return cls(encoder=encoder, device=device)
+        return cls(encoder=encoder, device=device, config=config)
 
     # ------------------------------------------------------------------
     # Ingest
     # ------------------------------------------------------------------
 
     def _ingest(self, nac_path: Path) -> tuple[PithosStore, list[TileMetadata]]:
+        tile_size = self._config.tile_size
+        stride = self._config.stride
+        max_batch_size = self._config.max_batch_size
         log.info(
             "Slicing and embedding %s (Tile: %d, Stride: %d, Batch Size: %d) …",
-            nac_path.name, TILE_SIZE, STRIDE, MAX_BATCH_SIZE,
+            nac_path.name, tile_size, stride, max_batch_size,
         )
         store    = PithosStore()
         ingestor = DataIngestor(model=self._encoder, store=store,
-                                max_batch_size=MAX_BATCH_SIZE)
-        ingestor.ingest_nac(path=nac_path, tile_size=TILE_SIZE, stride=STRIDE)
+                                max_batch_size=max_batch_size)
+        ingestor.ingest_nac(path=nac_path, tile_size=tile_size, stride=stride)
 
         ingestor.screener.shutdown()
         del ingestor
@@ -116,13 +136,14 @@ class LunaPipeline:
         return store, store._metadata
 
     def _save_index(self, store: PithosStore, nac_path: Path) -> Path:
-        INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        index_dir = self._config.index_dir
+        index_dir.mkdir(parents=True, exist_ok=True)
         if self._device == "mps":
             torch.mps.empty_cache()
         elif self._device == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
-        prefix = str(INDEX_DIR / f"pithos_{nac_path.stem}")
+        prefix = str(index_dir / f"pithos_{nac_path.stem}")
         log.info("Compiling Pithos PLAN index → %s.bin …", prefix)
         store.save_to_disk(prefix)
         return Path(prefix)
@@ -260,35 +281,98 @@ class LunaPipeline:
     # Public API
     # ------------------------------------------------------------------
 
+    @overload
     def scan(
         self,
         product_ids: str | list[str],
         query_dir: str | Path,
-        top_k: int         = FINAL_TOP_K,
-        search_k: int      = SEARCH_K,
-        min_dist_px: float = MIN_DIST_PX,
+        top_k: int | None = ...,
+        search_k: int | None = ...,
+        min_dist_px: float | None = ...,
+        force_reingest: bool = ...,
+        trace: dict = ...,
+        metrics: Literal[False] = ...,
+        on_progress: Callable[[str, int, int], None] | None = ...,
+    ) -> list[CandidateHit]: ...
+
+    @overload
+    def scan(
+        self,
+        product_ids: str | list[str],
+        query_dir: str | Path,
+        top_k: int | None = ...,
+        search_k: int | None = ...,
+        min_dist_px: float | None = ...,
+        force_reingest: bool = ...,
+        trace: dict = ...,
+        metrics: Literal[True] = ...,
+        on_progress: Callable[[str, int, int], None] | None = ...,
+    ) -> tuple[list[CandidateHit], MetricsReport]: ...
+
+    def scan(
+        self,
+        product_ids: str | list[str],
+        query_dir: str | Path,
+        top_k: int | None = None,
+        search_k: int | None = None,
+        min_dist_px: float | None = None,
         force_reingest: bool = False,
         trace: dict = None,
-    ) -> list[CandidateHit]:
+        metrics: bool = False,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> list[CandidateHit] | tuple[list[CandidateHit], MetricsReport]:
+        # Use config defaults if not provided
+        if top_k is None:
+            top_k = self._config.final_top_k
+        if search_k is None:
+            search_k = self._config.search_k
+        if min_dist_px is None:
+            min_dist_px = self._config.min_dist_px
+        
         if isinstance(product_ids, str):
             product_ids = [product_ids]
 
+        # Initialize trace dict if metrics is requested
+        if metrics and trace is None:
+            trace = {}
+
         metadata_map: dict[str, list[TileMetadata]] = {}
+        total_tiles = 0
+        total_scan_start = time.perf_counter()
+        index_dir = self._config.index_dir
+        scratch_dir = self._config.scratch_dir
 
         for pid in product_ids:
-            nac_path     = SCRATCH_DIR / f"{pid}.IMG"
-            index_prefix = str(INDEX_DIR / f"pithos_{pid}")
+            nac_path     = scratch_dir / f"{pid}.IMG"
+            index_prefix = str(index_dir / f"pithos_{pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
 
             if not nac_path.exists():
                 log.info("Fetching %s from PDS …", pid)
-                nac_path = fetch_nac(pid, dest_dir=SCRATCH_DIR)
+                nac_path = fetch_nac(pid, dest_dir=scratch_dir)
 
             if force_reingest or not index_exists:
                 log.info("Ingesting %s …", pid)
+                t_ingest_start = time.perf_counter()
                 store, metadata = self._ingest(nac_path)
-                metadata_map[pid] = metadata
-                self._save_index(store, nac_path)
+                t_ingest_elapsed = time.perf_counter() - t_ingest_start
+                
+                if trace is not None:
+                    trace[f"ingest_s_{pid}"] = t_ingest_elapsed
+                    trace[f"ingest_tiles_{pid}"] = len(store._metadata)
+                    trace[f"ingest_tiles_per_s_{pid}"] = len(store._metadata) / t_ingest_elapsed if t_ingest_elapsed > 0 else 0
+                
+                total_tiles += len(store._metadata)
+                
+                t_compile_start = time.perf_counter()
+                index_path = self._save_index(store, nac_path)
+                t_compile_elapsed = time.perf_counter() - t_compile_start
+                
+                if trace is not None:
+                    trace[f"index_compile_s_{pid}"] = t_compile_elapsed
+                    if index_path.exists():
+                        trace[f"index_size_bytes_{pid}"] = index_path.stat().st_size
+                
                 del store
                 gc.collect()
             else:
@@ -296,6 +380,11 @@ class LunaPipeline:
                 meta_path = f"{index_prefix}_meta.pkl"
                 with open(meta_path, "rb") as f:
                     metadata_map[pid] = pickle.load(f)
+                
+                if trace is not None:
+                    bin_path = f"{index_prefix}.bin"
+                    if Path(bin_path).exists():
+                        trace[f"index_size_bytes_{pid}"] = Path(bin_path).stat().st_size
 
         t_dino_start = time.perf_counter()
         query_vecs = self._encode_queries(query_dir)
@@ -305,7 +394,7 @@ class LunaPipeline:
         all_hits: list[CandidateHit] = []
 
         for pid in product_ids:
-            index_prefix = str(INDEX_DIR / f"pithos_{pid}")
+            index_prefix = str(index_dir / f"pithos_{pid}")
             metadata     = metadata_map[pid]
 
             vote_map, best_dist = self._search(
@@ -333,9 +422,59 @@ class LunaPipeline:
         for i, h in enumerate(all_hits):
             object.__setattr__(h, "rank", i + 1)
 
+        total_scan_elapsed = time.perf_counter() - total_scan_start
+        
+        if trace is not None:
+            trace["total_scan_s"] = total_scan_elapsed
+            trace["n_queries"] = len(query_vecs)
+            trace["n_candidates_raw"] = len(all_hits)
+            
+            # Aggregate ingest metrics across all product IDs
+            trace["ingest_s"] = sum(trace.get(f"ingest_s_{pid}", 0.0) for pid in product_ids)
+            trace["ingest_tiles"] = sum(trace.get(f"ingest_tiles_{pid}", 0) for pid in product_ids)
+            trace["index_compile_s"] = sum(trace.get(f"index_compile_s_{pid}", 0.0) for pid in product_ids)
+            trace["index_size_bytes"] = sum(trace.get(f"index_size_bytes_{pid}", 0) for pid in product_ids)
+            
+            # Calculate tiles per second
+            total_ingest_time = trace["ingest_s"]
+            trace["ingest_tiles_per_s"] = trace["ingest_tiles"] / total_ingest_time if total_ingest_time > 0 else 0.0
+        
         log.info("Scan complete: %d hits across %d NACs.", len(all_hits), len(product_ids))
+        
+        if metrics:
+            report = MetricsReport.from_trace(trace)
+            return all_hits, report
+        
         return all_hits
 
+
+    @overload
+    def refine(
+        self,
+        hits: list[CandidateHit],
+        checkpoint: str | Path | None = ...,
+        score_thr: float = ...,
+        essa_min_score: float = ...,
+        output_dir: str | Path | None = ...,
+        skip_preprocess: bool = ...,
+        trace: dict = ...,
+        metrics: Literal[False] = ...,
+        on_progress: Callable[[str, int, int], None] | None = ...,
+    ) -> list[RefinedHit]: ...
+
+    @overload
+    def refine(
+        self,
+        hits: list[CandidateHit],
+        checkpoint: str | Path | None = ...,
+        score_thr: float = ...,
+        essa_min_score: float = ...,
+        output_dir: str | Path | None = ...,
+        skip_preprocess: bool = ...,
+        trace: dict = ...,
+        metrics: Literal[True] = ...,
+        on_progress: Callable[[str, int, int], None] | None = ...,
+    ) -> tuple[list[RefinedHit], MetricsReport]: ...
 
     def refine(
         self,
@@ -346,21 +485,59 @@ class LunaPipeline:
         output_dir: str | Path | None = None,
         skip_preprocess: bool = False,
         trace: dict = None,
-    ) -> list[RefinedHit]:
+        metrics: bool = False,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> list[RefinedHit] | tuple[list[RefinedHit], MetricsReport]:
         from luna.models import ESSARefiner
         from luna.config import WEIGHTS_DIR
 
-        log.info("Initializing ESSARefiner stage on %s …", self._device)
-        checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
-        refiner    = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
+        # Initialize trace dict if metrics is requested
+        if metrics and trace is None:
+            trace = {}
 
+        # Disable tqdm if progress callback is provided
+        if on_progress is not None:
+            os.environ["LUNA_DISABLE_TQDM"] = "1"
+
+        log.info("Initializing ESSARefiner stage on %s …", self._device)
+        if on_progress:
+            on_progress("Initializing ESSARefiner", 0, 1)
+        
+        checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
+        refiner = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
+
+        if on_progress:
+            on_progress("Initializing ESSARefiner", 1, 1)
+            on_progress("Running ESSA refinement", 0, len(hits))
+
+        total_refine_start = time.perf_counter()
+        
         log.info("Passing %d candidates to ESSA (score_thr=%.2f) …", len(hits), score_thr)
-        return refiner.refine(
-            hits             = hits,
-            out_dir          = output_dir,
-            score_thr        = score_thr,
-            essa_min_score   = essa_min_score,
-            save_debug_plots = output_dir is not None,
-            skip_preprocess  = skip_preprocess,
-            trace            = trace,
+        refined = refiner.refine(
+            hits=hits,
+            out_dir=output_dir,
+            score_thr=score_thr,
+            essa_min_score=essa_min_score,
+            save_debug_plots=output_dir is not None,
+            skip_preprocess=skip_preprocess,
+            trace=trace,
         )
+        
+        if on_progress:
+            on_progress("Running ESSA refinement", len(hits), len(hits))
+            on_progress("ESSA refinement complete", 1, 1)
+
+        total_refine_elapsed = time.perf_counter() - total_refine_start
+        
+        if trace is not None:
+            trace["total_s"] = trace.get("total_scan_s", 0.0) + total_refine_elapsed
+            trace["essa_s"] = total_refine_elapsed
+            trace["essa_hits_in"] = len(hits)
+            trace["essa_hits_out"] = len(refined)
+            trace["essa_refinement_ratio"] = len(refined) / len(hits) if len(hits) > 0 else 0.0
+        
+        if metrics:
+            report = MetricsReport.from_trace(trace)
+            return refined, report
+        
+        return refined

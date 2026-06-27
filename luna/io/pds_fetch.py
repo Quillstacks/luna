@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+
+from luna.exceptions import NACNotFoundError
 from pathlib import Path
 from typing import Optional
 
@@ -86,4 +88,4 @@ def fetch_nac(
             log.warning("fetch %s attempt %d/%d failed (%s); retrying in %.1fs",
                         pid, attempt, retries, e, wait)
             time.sleep(wait)
-    raise RuntimeError(f"fetch_nac({pid}) failed after {retries} attempts: {last_err}")
+    raise NACNotFoundError(f"fetch_nac({pid}) failed after {retries} attempts: {last_err}")

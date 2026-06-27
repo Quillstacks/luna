@@ -45,12 +45,27 @@ class RefinedHit:
     dino_score: float
     essa_score: float
     essa_class: str
-    lon: float        # Pithos candidate tile centre (coarse)
+    lon: float
     lat: float
-    essa_lon: float   # ESSA detection centroid (accurate)
+    essa_lon: float
     essa_lat: float
     x_offset: int
     y_offset: int
+
+    def _repr_html_(self) -> str:
+        return (
+            f"<table><tr><th colspan='2' style='text-align:left'>RefinedHit</th></tr>"
+            f"<tr><td>Rank</td><td>{self.rank}</td></tr>"
+            f"<tr><td>Product ID</td><td>{self.product_id}</td></tr>"
+            f"<tr><td>Votes</td><td>{self.votes}</td></tr>"
+            f"<tr><td>DINO Score</td><td>{self.dino_score:.2f}</td></tr>"
+            f"<tr><td>ESSA Score</td><td>{self.essa_score:.2f}</td></tr>"
+            f"<tr><td>Class</td><td>{self.essa_class}</td></tr>"
+            f"<tr><td>Position</td><td>({self.lon:.4f}, {self.lat:.4f})</td></tr>"
+            f"<tr><td>ESSA Position</td><td>({self.essa_lon:.4f}, {self.essa_lat:.4f})</td></tr>"
+            f"<tr><td>Offset</td><td>({self.x_offset}, {self.y_offset})</td></tr>"
+            f"</table>"
+        )
 
 
 # ---------------------------------------------------------------------------

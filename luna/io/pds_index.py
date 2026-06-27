@@ -20,6 +20,8 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from luna.exceptions import IndexError
 from typing import Optional
 
 import requests
@@ -171,7 +173,7 @@ class PDSIndex:
         end = start + record_bytes - 1
         r = self.session.get(url, headers={"Range": f"bytes={start}-{end}"}, timeout=30)
         if r.status_code not in (200, 206):
-            raise RuntimeError(f"HTTP {r.status_code} on range read {url}")
+            raise IndexError(f"HTTP {r.status_code} on range read {url}")
         return r.content.decode("ascii", errors="replace")
 
     def _characterize_volume(self, volume_id: str) -> VolumeInfo:

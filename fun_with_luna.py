@@ -48,6 +48,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Rebuild the Pithos index even if one already exists")
     parser.add_argument("--trace", action="store_true",
                         help="Enable deep execution profiling with step-by-step timestamps")
+    parser.add_argument("--metrics", action="store_true",
+                        help="Print MetricsReport after the run")
     return parser.parse_args()
 
 
@@ -204,28 +206,59 @@ def main() -> None:
     # Phase 1: DINOv3 Vector Scan
     console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & Pithos Index Matching...[/]")
     start_scan = time.perf_counter()
-    hits = pipeline.scan(
-        args.nac,
-        query_dir=args.query_dir,
-        top_k=150,
-        search_k=200,
-        force_reingest=args.force_reingest,
-        trace=trace_data
-    )
+    
+    if args.metrics:
+        hits, scan_metrics = pipeline.scan(
+            args.nac,
+            query_dir=args.query_dir,
+            top_k=150,
+            search_k=200,
+            force_reingest=args.force_reingest,
+            trace=trace_data,
+            metrics=True
+        )
+    else:
+        hits = pipeline.scan(
+            args.nac,
+            query_dir=args.query_dir,
+            top_k=150,
+            search_k=200,
+            force_reingest=args.force_reingest,
+            trace=trace_data
+        )
+    
     duration_scan = time.perf_counter() - start_scan
 
     # Phase 2: ESSA Refinement
     console.print("\n[bold magenta]>>> Phase 2: Running ESSA Mask R-CNN Refinement Stage...[/]")
     start_refine = time.perf_counter()
-    refined = pipeline.refine(
-        hits,
-        score_thr=args.score,
-        essa_min_score=args.score, 
-        output_dir=args.out_dir,
-        skip_preprocess=args.skip_preprocess,
-        trace=trace_data
-    )
+    
+    if args.metrics:
+        refined, metrics = pipeline.refine(
+            hits,
+            score_thr=args.score,
+            essa_min_score=args.score, 
+            output_dir=args.out_dir,
+            skip_preprocess=args.skip_preprocess,
+            trace=trace_data,
+            metrics=True
+        )
+    else:
+        refined = pipeline.refine(
+            hits,
+            score_thr=args.score,
+            essa_min_score=args.score, 
+            output_dir=args.out_dir,
+            skip_preprocess=args.skip_preprocess,
+            trace=trace_data
+        )
+    
     duration_refine = time.perf_counter() - start_refine
+
+    # Print MetricsReport if requested
+    if args.metrics:
+        console.print("\n")
+        console.print(metrics)
 
     # Output report
     print_report(refined, duration_scan, duration_refine, trace_data)
