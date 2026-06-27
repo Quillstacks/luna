@@ -51,7 +51,7 @@ class RefinedHit:
     essa_score: float = 0.0
     essa_class: str = ""
     essa_lon: float = 0.0
-    esa_lat: float = 0.0
+    essa_lat: float = 0.0
     # DINO refiner fields (optional)
     dino_similarity: float = 0.0
 

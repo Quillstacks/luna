@@ -20,8 +20,7 @@ cdef extern from *:
         #include <immintrin.h>
         #define cpu_relax() _mm_pause()
     #elif defined(__aarch64__) || defined(__arm__)
-        #include <arm_acle.h>
-        #define cpu_relax() __yield()
+        #define cpu_relax() __asm__ __volatile__("yield" ::: "memory")
     #else
         #define cpu_relax() ((void)0)
     #endif

@@ -37,3 +37,4 @@ temp/
 *darwin.so
 *.o
 *.cpp
+*.so
