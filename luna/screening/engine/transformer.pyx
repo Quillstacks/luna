@@ -59,6 +59,7 @@ cdef class NACTransformer:
         int             consumer_id
         atomic[int]     is_running
         atomic[int]     batch_ready
+        atomic[int]     safe_to_free  # set to 1 by the thread just before it exits
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ cdef class NACTransformer:
 
         self.is_running.store(1)
         self.batch_ready.store(0)
+        self.safe_to_free.store(0)  # not safe until the thread confirms exit
 
         # Allocate feeder buffer: max_batch_size × 1ch × TILE_SIZE² × 1 byte
         self.batch.max_tiles     = max_batch_size
@@ -82,12 +84,19 @@ cdef class NACTransformer:
 
     def stop(self):
         self.is_running.store(0)
+        # safe_to_free stays 0 here; the thread sets it to 1 before it exits
 
     def __dealloc__(self):
-        if self.batch.tensor_data is not NULL:
-            free(self.batch.tensor_data)
-        if self.batch.tile_offsets is not NULL:
-            free(self.batch.tile_offsets)
+        # Only free if the thread has confirmed it has exited by setting
+        # safe_to_free = 1.  If it hasn't, intentionally leak the ~4 MB
+        # buffer — the OS reclaims it on process exit.  This avoids the
+        # use-after-free segfault on Apple Silicon where __yield() keeps
+        # spinning longer than expected after is_running is cleared.
+        if self.safe_to_free.load() == 1:
+            if self.batch.tensor_data is not NULL:
+                free(self.batch.tensor_data)
+            if self.batch.tile_offsets is not NULL:
+                free(self.batch.tile_offsets)
 
     # ── Main loop (GIL-free) ──────────────────────────────────────────────────
 
@@ -114,6 +123,10 @@ cdef class NACTransformer:
 
                 else:
                     cpu_relax()
+
+            # Thread is about to exit — signal __dealloc__ that it is now
+            # safe to free the native buffers without a use-after-free crash.
+            self.safe_to_free.store(1)
 
     # ── Slot processing ───────────────────────────────────────────────────────
 

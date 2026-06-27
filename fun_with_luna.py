@@ -82,8 +82,7 @@ def format_duration(seconds: float) -> str:
 
 STEP_NAMES = {
     "p1_pytorch_dino_inference": "  └─ PyTorch DINO Inference",
-    "p1_lcvk_polarquant_binarization": "  └─ LCVK PolarQuant Binarization",
-    "p1_native_lcvk_index_scan": "  └─ Native LCVK Index Scan",
+    "p1_pithos_index_scan": "  └─ Pithos MIDB Index Scan",
     "p1_cpu_nms_filtering": "  └─ CPU NMS Filtering",
     "p2_geotiff_loading": "  └─ GeoTIFF Loading",
     "p2_mask_rcnn_inference": "  └─ Mask R-CNN Inference"

@@ -31,9 +31,9 @@ from luna.config import (
 )
 from luna.io.pds_fetch import fetch_nac
 from luna.screening.candidate_gen import DataIngestor
-from luna.screening.lcvk import LcvkEngine
+from luna.screening.pithos import PithosMIDB
 from luna.screening.protocols import TileMetadata
-from luna.storage.lcvk_store import LcvkLocalStore
+from luna.storage.pithos_store import PithosStore
 from luna.models import RefinedHit
 
 log = logging.getLogger(__name__)
@@ -95,12 +95,12 @@ class LunaPipeline:
     # Ingest
     # ------------------------------------------------------------------
 
-    def _ingest(self, nac_path: Path) -> tuple[LcvkLocalStore, list[TileMetadata]]:
+    def _ingest(self, nac_path: Path) -> tuple[PithosStore, list[TileMetadata]]:
         log.info(
             "Slicing and embedding %s (Tile: %d, Stride: %d, Batch Size: %d) …",
             nac_path.name, TILE_SIZE, STRIDE, MAX_BATCH_SIZE,
         )
-        store    = LcvkLocalStore()
+        store    = PithosStore()
         ingestor = DataIngestor(model=self._encoder, store=store,
                                 max_batch_size=MAX_BATCH_SIZE)
         ingestor.ingest_nac(path=nac_path, tile_size=TILE_SIZE, stride=STRIDE)
@@ -115,7 +115,7 @@ class LunaPipeline:
         log.info("Ingestion complete. Generated %d tile embeddings.", len(store._metadata))
         return store, store._metadata
 
-    def _save_index(self, store: LcvkLocalStore, nac_path: Path) -> Path:
+    def _save_index(self, store: PithosStore, nac_path: Path) -> Path:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         if self._device == "mps":
             torch.mps.empty_cache()
@@ -182,29 +182,22 @@ class LunaPipeline:
         best_dist : dict[int, float] — lowest Hamming distance seen for each tile
                                        (lower = better, unlike FAISS inner-product)
         """
-        log.info(
-            "Binarizing %d query anchors for LCVK search …", len(query_vecs_f32)
-        )
-        t_bin_start = time.perf_counter()
-        query_bin = LcvkEngine.binarize(query_vecs_f32)  # (N_q, 6) int64
-        if trace is not None:
-            trace["p1_lcvk_polarquant_binarization"] = time.perf_counter() - t_bin_start
-
         index_bin  = f"{index_prefix}.bin"
         index_name = Path(index_prefix).stem
-        log.info("Loading LCVK index %s …", index_bin)
+        log.info("Loading Pithos index %s …", index_bin)
 
+        db = PithosMIDB()
+        db.load_index(index_name, index_bin)
+        log.info(
+            "Executing Hamming KNN (k=%d) for %d query vectors …",
+            k, len(query_vecs_f32),
+        )
         t_scan_start = time.perf_counter()
-        with LcvkEngine() as engine:
-            engine.load_index(index_name, index_bin)
-            log.info(
-                "Executing Hamming KNN (k=%d) for %d query vectors …",
-                k, len(query_bin),
-            )
-            # ids, dists: (N_q, k)
-            ids_mat, dists_mat = engine.batch_search(index_name, query_bin, k)
+        # Pithos accepts raw float32 queries — no pre-binarization needed
+        ids_mat, dists_mat = db.batch_search(index_name, query_vecs_f32, k)
+        db.drop_index(index_name)
         if trace is not None:
-            trace["p1_native_lcvk_index_scan"] = time.perf_counter() - t_scan_start
+            trace["p1_pithos_index_scan"] = time.perf_counter() - t_scan_start
 
         vote_map:  dict[int, int]   = {}
         best_dist: dict[int, float] = {}

@@ -49,12 +49,19 @@ class ScreenerEngine:
         self._alive = False
         self.transformer.stop()
         self.transformer.is_batch_ready = 0
+        # 5 s is plenty on most systems; if the Cython thread is still stuck
+        # in the Apple Silicon busy-spin, __dealloc__ will skip free() safely
+        # thanks to the safe_to_free flag in transformer.pyx.
         self._thread.join(timeout=5.0)
         if self._thread.is_alive():
-            log.warning("Transformer thread did not exit within timeout.")
+            log.warning(
+                "Transformer thread did not exit within 5 s — "
+                "native buffer dealloc will be skipped (safe via safe_to_free flag)."
+            )
 
     def __del__(self) -> None:
-        self.shutdown()
+        if getattr(self, "_alive", False):
+            self.shutdown()
 
 
 class DataIngestor:
