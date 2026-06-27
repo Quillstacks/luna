@@ -14,6 +14,7 @@ checkpoints/
 *.tif
 *.tiff
 *.cub
+*.h
 
 # IDE
 .vscode/
@@ -32,7 +33,7 @@ Thumbs.db
 wrappers.py
 luna_hole_adapter/
 *qdrant*
-dino*
+weights/
 temp/
 *darwin.so
 *.o
