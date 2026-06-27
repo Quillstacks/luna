@@ -43,29 +43,36 @@ class RefinedHit:
     product_id: str
     votes: int
     dino_score: float
-    essa_score: float
-    essa_class: str
     lon: float
     lat: float
-    essa_lon: float
-    essa_lat: float
     x_offset: int
     y_offset: int
+    # ESSA-specific fields (optional, 0.0 / "" if not using ESSA)
+    essa_score: float = 0.0
+    essa_class: str = ""
+    essa_lon: float = 0.0
+    esa_lat: float = 0.0
+    # DINO refiner fields (optional)
+    dino_similarity: float = 0.0
 
     def _repr_html_(self) -> str:
-        return (
-            f"<table><tr><th colspan='2' style='text-align:left'>RefinedHit</th></tr>"
-            f"<tr><td>Rank</td><td>{self.rank}</td></tr>"
-            f"<tr><td>Product ID</td><td>{self.product_id}</td></tr>"
-            f"<tr><td>Votes</td><td>{self.votes}</td></tr>"
-            f"<tr><td>DINO Score</td><td>{self.dino_score:.2f}</td></tr>"
-            f"<tr><td>ESSA Score</td><td>{self.essa_score:.2f}</td></tr>"
-            f"<tr><td>Class</td><td>{self.essa_class}</td></tr>"
-            f"<tr><td>Position</td><td>({self.lon:.4f}, {self.lat:.4f})</td></tr>"
-            f"<tr><td>ESSA Position</td><td>({self.essa_lon:.4f}, {self.essa_lat:.4f})</td></tr>"
-            f"<tr><td>Offset</td><td>({self.x_offset}, {self.y_offset})</td></tr>"
-            f"</table>"
-        )
+        rows = [
+            f"<tr><td>Rank</td><td>{self.rank}</td></tr>",
+            f"<tr><td>Product ID</td><td>{self.product_id}</td></tr>",
+            f"<tr><td>Votes</td><td>{self.votes}</td></tr>",
+            f"<tr><td>DINO Score</td><td>{self.dino_score:.2f}</td></tr>",
+            f"<tr><td>Position</td><td>({self.lon:.4f}, {self.lat:.4f})</td></tr>",
+            f"<tr><td>Offset</td><td>({self.x_offset}, {self.y_offset})</td></tr>",
+        ]
+        if self.essa_score > 0:
+            rows.extend([
+                f"<tr><td>ESSA Score</td><td>{self.essa_score:.2f}</td></tr>",
+                f"<tr><td>Class</td><td>{self.essa_class}</td></tr>",
+                f"<tr><td>ESSA Position</td><td>({self.essa_lon:.4f}, {self.essa_lat:.4f})</td></tr>",
+            ])
+        if self.dino_similarity > 0:
+            rows.append(f"<tr><td>DINO Similarity</td><td>{self.dino_similarity:.2f}</td></tr>")
+        return f"<table><tr><th colspan='2' style='text-align:left'>RefinedHit</th></tr>{" ".join(rows)}</table>"
 
 
 # ---------------------------------------------------------------------------

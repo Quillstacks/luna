@@ -111,3 +111,10 @@ class LunaConfig:
     scratch_dir: Path = field(default_factory=lambda: SCRATCH_DIR)
     pithos_tiers: np.ndarray = field(default_factory=lambda: np.array([64, 128, 256, 384], dtype=np.int32))
     energy_budget: float = 0.85
+    
+    # Output options
+    save_attention_overlay: bool = False
+    
+    # Pithos options
+    pithos_use_fp16: bool = False
+    pithos_use_cuda: bool = False

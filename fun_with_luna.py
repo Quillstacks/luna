@@ -50,6 +50,21 @@ def parse_arguments() -> argparse.Namespace:
                         help="Enable deep execution profiling with step-by-step timestamps")
     parser.add_argument("--metrics", action="store_true",
                         help="Print MetricsReport after the run")
+    parser.add_argument("--search-k", type=int, default=200,
+                        help="Number of nearest neighbors per query in KNN search")
+    parser.add_argument("--refiner", type=str, default="essa", choices=["essa", "dino"],
+                        help="Second-stage refiner: 'essa' (Mask R-CNN, accurate) or 'dino' (lightweight)")
+    
+    # Pithos / Index options
+    parser.add_argument("--pithos-use-fp16", action="store_true", default=False,
+                        help="Use FP16 precision for Pithos index (faster, less accurate)")
+    parser.add_argument("--pithos-use-cuda", action="store_true", default=False,
+                        help="Use CUDA-optimized Pithos build (requires CUDA hardware)")
+    
+    # Output options
+    parser.add_argument("--attention-overlay", action="store_true",
+                        help="Generate and save attention map overlays for refined candidates")
+    
     return parser.parse_args()
 
 
@@ -91,7 +106,7 @@ STEP_NAMES = {
 }
 
 
-def print_report(refined_hits: List[Any], duration_scan: float, duration_refine: float, trace_data: dict = None) -> None:
+def print_report(refined_hits: List[Any], duration_scan: float, duration_refine: float, trace_data: dict = None, refiner_type: str = "essa") -> None:
     total_time = duration_scan + duration_refine
     
     # Title Panel
@@ -114,18 +129,23 @@ def print_report(refined_hits: List[Any], duration_scan: float, duration_refine:
             center_x = h.x_offset + 128
             center_y = h.y_offset + 128
             
-            # Format classification cell with colors
-            if h.essa_class.lower() == "pit":
-                cls_text = Text("PIT", style="bold red")
-            else:
-                cls_text = Text("SKYLIGHT", style="bold green")
-                
-            conf_style = "bold green" if h.essa_score >= 0.8 else "yellow"
+            # Format classification cell with colors based on refiner type
+            if refiner_type == "essa":
+                if h.essa_class.lower() == "pit":
+                    cls_text = Text("PIT", style="bold red")
+                else:
+                    cls_text = Text("SKYLIGHT", style="bold green")
+                score = h.essa_score
+                conf_style = "bold green" if score >= 0.8 else "yellow"
+            else:  # dino refiner
+                cls_text = Text("PIT", style="bold red") if h.dino_similarity >= 0.85 else Text("CANDIDATE", style="bold yellow")
+                score = h.dino_similarity
+                conf_style = "bold green" if score >= 0.85 else "yellow"
             
             table.add_row(
                 f"{h.rank:02d}",
                 cls_text,
-                Text(f"{h.essa_score:.4f}", style=conf_style),
+                Text(f"{score:.4f}", style=conf_style),
                 f"{h.lat:10.6f}°",
                 f"{h.lon:10.6f}°",
                 f"({center_x}, {center_y})",
@@ -133,10 +153,14 @@ def print_report(refined_hits: List[Any], duration_scan: float, duration_refine:
             )
         console.print(table)
     else:
-        console.print("[bold red]No candidate targets met the ESSA confidence threshold.[/]")
+        if refiner_type == "essa":
+            console.print("[bold red]No candidate targets met the ESSA confidence threshold.[/]")
+        else:
+            console.print("[bold red]No candidate targets met the DINO similarity threshold.[/]")
         
     # Performance Summary Panel
     console.print("\n")
+    refiner_name = "ESSA" if refiner_type == "essa" else "DINO"
     if trace_data:
         perf_table = Table(title="Pipeline Performance Summary", show_header=True, border_style="dim", width=80)
         perf_table.add_column("Pipeline Stage / Operational Step", style="bold cyan")
@@ -150,7 +174,7 @@ def print_report(refined_hits: List[Any], duration_scan: float, duration_refine:
                 clean_step_name = STEP_NAMES.get(step, f"  └─ {step[3:].replace('_', ' ').title()}")
                 perf_table.add_row(clean_step_name, format_duration(duration), f"{(duration/total_time)*100:5.1f}%", style="dim")
                 
-        perf_table.add_row("Phase 2: ESSA Refinement Stage (Total)", format_duration(duration_refine), f"{(duration_refine/total_time)*100:5.1f}%")
+        perf_table.add_row(f"Phase 2: {refiner_name} Refinement Stage (Total)", format_duration(duration_refine), f"{(duration_refine/total_time)*100:5.1f}%")
         
         for step, duration in trace_data.items():
             if step.startswith("p2_"):
@@ -165,7 +189,7 @@ def print_report(refined_hits: List[Any], duration_scan: float, duration_refine:
         perf_table.add_column("Duration", style="green", justify="right")
         
         perf_table.add_row("DINOv3 Vector Scan Stage", format_duration(duration_scan))
-        perf_table.add_row("ESSA Refinement Stage", format_duration(duration_refine))
+        perf_table.add_row(f"{refiner_name} Refinement Stage", format_duration(duration_refine))
         perf_table.add_row("Total Processing Time", format_duration(total_time))
     
     console.print(perf_table)
@@ -182,6 +206,7 @@ def main() -> None:
 
     # Print Configuration Dashboard
     sys_info = get_system_info()
+    refiner_name = "ESSA" if args.refiner == "essa" else "DINO"
     info_table = Table(title="Runtime & Hardware Parameters", show_header=False, border_style="dim", width=80)
     info_table.add_column("Parameter", style="bold cyan")
     info_table.add_column("Value", style="green")
@@ -191,14 +216,22 @@ def main() -> None:
     info_table.add_row("Resolved Batch Size", f"{MAX_BATCH_SIZE} tiles")
     info_table.add_row("Slicing Dimensions", f"{TILE_SIZE}x{TILE_SIZE} px (Stride: {STRIDE} px)")
     info_table.add_row("Target NAC Product", args.nac)
-    info_table.add_row("Preprocessing Mode", "Skip (Reuse GeoTIFF Cache)" if args.skip_preprocess else "Full (ISIS Pipeline)")
+    preprocess_text = "Skip (Reuse GeoTIFF Cache)" if args.skip_preprocess else "Full (ISIS Pipeline)"
+    info_table.add_row("Preprocessing Mode", preprocess_text)
+    info_table.add_row("Refiner", f"{refiner_name} Refiner")
     
     console.print(info_table)
     console.print("\n")
 
     # Load Model Weights
     console.print("[bold yellow]>>> Initializing Model Weights & LoRA Adapters...[/]")
-    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
+    from luna.config import LunaConfig
+    config = LunaConfig(
+        save_attention_overlay=args.attention_overlay,
+        pithos_use_fp16=args.pithos_use_fp16,
+        pithos_use_cuda=args.pithos_use_cuda,
+    )
+    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora", refiner=args.refiner, config=config)
 
     # Dictionary to collect granular timing metrics
     trace_data = {} if args.trace else None
@@ -212,7 +245,7 @@ def main() -> None:
             args.nac,
             query_dir=args.query_dir,
             top_k=150,
-            search_k=200,
+            search_k=args.search_k,
             force_reingest=args.force_reingest,
             trace=trace_data,
             metrics=True
@@ -222,15 +255,15 @@ def main() -> None:
             args.nac,
             query_dir=args.query_dir,
             top_k=150,
-            search_k=200,
+            search_k=args.search_k,
             force_reingest=args.force_reingest,
             trace=trace_data
         )
     
     duration_scan = time.perf_counter() - start_scan
 
-    # Phase 2: ESSA Refinement
-    console.print("\n[bold magenta]>>> Phase 2: Running ESSA Mask R-CNN Refinement Stage...[/]")
+    # Phase 2: Refinement
+    console.print(f"\n[bold magenta]>>> Phase 2: Running {refiner_name} Refinement Stage...[/]")
     start_refine = time.perf_counter()
     
     if args.metrics:
@@ -261,7 +294,7 @@ def main() -> None:
         console.print(metrics)
 
     # Output report
-    print_report(refined, duration_scan, duration_refine, trace_data)
+    print_report(refined, duration_scan, duration_refine, trace_data, args.refiner)
 
 
 if __name__ == "__main__":

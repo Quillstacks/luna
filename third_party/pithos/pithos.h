@@ -52,6 +52,16 @@ int vdb_backup_delta(graal_isolatethread_t*, char*, char*);
 
 int vdb_restore_delta(graal_isolatethread_t*, char*, char*, int);
 
+int vdb_cuda_init(graal_isolatethread_t*, int);
+
+int vdb_cuda_shutdown(graal_isolatethread_t*);
+
+int vdb_cuda_is_available(graal_isolatethread_t*);
+
+int vdb_cuda_batch_search(graal_isolatethread_t*, char*, float*, int, int, long long*, int*);
+
+long long int vdb_cuda_query_planetary_grid(graal_isolatethread_t*, char*, float*, int*, int*, int, char*);
+
 #if defined(__cplusplus)
 }
 #endif

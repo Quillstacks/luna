@@ -38,16 +38,31 @@ log = logging.getLogger(__name__)
 _THIRD_PARTY = Path(__file__).resolve().parents[2] / "third_party" / "pithos"
 
 
-def _find_lib() -> Path:
+def _find_lib(use_cuda: bool = False) -> Path:
     system = platform.system()
-    candidates = (
-        [_THIRD_PARTY / "libpithos-macos-aarch64.dylib", _THIRD_PARTY / "libpithos.dylib"]
-        if system == "Darwin"
-        else [_THIRD_PARTY / "libpithos-linux-x86_64.so", _THIRD_PARTY / "libpithos.so"]
-    )
+    
+    if use_cuda and system == "Linux":
+        candidates = [
+            _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
+            _THIRD_PARTY / "libpithos-cuda.so",
+            _THIRD_PARTY / "libpithos-linux-x86_64.so",
+            _THIRD_PARTY / "libpithos.so",
+        ]
+    elif system == "Darwin":
+        candidates = [
+            _THIRD_PARTY / "libpithos-macos-aarch64.dylib",
+            _THIRD_PARTY / "libpithos.dylib",
+        ]
+    else:
+        candidates = [
+            _THIRD_PARTY / "libpithos-linux-x86_64.so",
+            _THIRD_PARTY / "libpithos.so",
+        ]
+    
     for p in candidates:
         if p.exists():
             return p
+    
     raise FileNotFoundError(
         f"Pithos native library not found. Expected one of:\n"
         + "\n".join(f"  {p}" for p in candidates)
@@ -154,10 +169,10 @@ class PithosMIDB:
 
     _instance: "PithosMIDB | None" = None
 
-    def __new__(cls, lib_path: str | Path | None = None) -> "PithosMIDB":
+    def __new__(cls, lib_path: str | Path | None = None, use_cuda: bool = False) -> "PithosMIDB":
         if cls._instance is None:
             instance = super().__new__(cls)
-            resolved = Path(lib_path) if lib_path is not None else _find_lib()
+            resolved = Path(lib_path) if lib_path is not None else _find_lib(use_cuda=use_cuda)
             instance._init_ffi(resolved)
             cls._instance = instance
         return cls._instance
@@ -224,6 +239,7 @@ class PithosMIDB:
             ctypes.c_void_p,    # vectors* (float32[])
             ctypes.c_int,       # n_records
             ctypes.c_int,       # q_mode
+            ctypes.c_bool,      # use_fp16
         ]
         lib.vdb_compile_index_file.restype = ctypes.c_int
 
@@ -363,6 +379,7 @@ class PithosMIDB:
         dimension: int     = _DINO_DIM,
         tiers: np.ndarray  = MOON_TIERS,
         q_mode: int        = 0,
+        use_fp16: bool     = False,
     ) -> None:
         """
         Compile raw float32 embeddings into an off-heap Pithos index file.
@@ -377,6 +394,7 @@ class PithosMIDB:
         dimension     : Vector dimension.  Default: 384.
         tiers         : Matryoshka cascade breakpoints.  Default: [64,128,256,384].
         q_mode        : 0 = 1-bit sign (default), 1 = 2-bit ternary, 2 = float32.
+        use_fp16      : Use FP16 precision for index. Default: False.
         """
         n = len(ids)
         if vectors.shape[0] != n:
@@ -399,6 +417,7 @@ class PithosMIDB:
                 vectors_c.ctypes.data_as(ctypes.c_void_p),
                 ctypes.c_int(n),
                 ctypes.c_int(q_mode),
+                ctypes.c_bool(use_fp16),
             )
         if status != 0:
             raise IndexError(f"vdb_compile_index_file failed (code {status}).")

@@ -37,10 +37,14 @@ class PithosStore:
         planet_id:     int         = MOON_ID,
         planet_radius: int         = MOON_RADIUS,
         tiers:         np.ndarray  = MOON_TIERS,
+        use_fp16:      bool        = False,
+        use_cuda:      bool        = False,
     ) -> None:
         self._planet_id     = planet_id
         self._planet_radius = planet_radius
         self._tiers         = tiers
+        self._use_fp16      = use_fp16
+        self._use_cuda      = use_cuda
         self._vectors:  list[np.ndarray]   = []
         self._metadata: list[TileMetadata] = []
 
@@ -88,7 +92,7 @@ class PithosStore:
         # 3. Compile native Pithos index (binarization happens inside the lib)
         Path(bin_path).parent.mkdir(parents=True, exist_ok=True)
         log.info("Compiling Pithos PLAN index → %s …", bin_path)
-        db = PithosMIDB()
+        db = PithosMIDB(use_cuda=self._use_cuda)
         db.build_index(
             file_path     = bin_path,
             ids           = ids,
@@ -96,6 +100,7 @@ class PithosStore:
             planet_id     = self._planet_id,
             planet_radius = self._planet_radius,
             tiers         = self._tiers,
+            use_fp16      = self._use_fp16,
         )
 
         # 4. Write metadata (list[TileMetadata], index == record ID)

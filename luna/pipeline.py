@@ -78,6 +78,7 @@ class LunaPipeline:
         self._encoder = encoder
         self._device  = device
         self._config  = config or LunaConfig()
+        self._refiner_type = "essa"  # Default refiner
 
     # ------------------------------------------------------------------
     # Construction
@@ -90,6 +91,7 @@ class LunaPipeline:
         matryoshka_dim: int = DINO_DIM,
         device: str | None = None,
         config: LunaConfig | None = None,
+        refiner: str = "essa",
     ) -> LunaPipeline:
         from luna.models.dinov3 import DINOEncoder
         if device is None:
@@ -106,7 +108,9 @@ class LunaPipeline:
             matryoshka_dim    = matryoshka_dim,
             device            = device,
         )
-        return cls(encoder=encoder, device=device, config=config)
+        pipeline = cls(encoder=encoder, device=device, config=config)
+        pipeline._refiner_type = refiner
+        return pipeline
 
     # ------------------------------------------------------------------
     # Ingest
@@ -120,7 +124,9 @@ class LunaPipeline:
             "Slicing and embedding %s (Tile: %d, Stride: %d, Batch Size: %d) …",
             nac_path.name, tile_size, stride, max_batch_size,
         )
-        store    = PithosStore()
+        pithos_use_fp16 = getattr(self._config, 'pithos_use_fp16', False)
+        pithos_use_cuda = getattr(self._config, 'pithos_use_cuda', False)
+        store    = PithosStore(use_fp16=pithos_use_fp16, use_cuda=pithos_use_cuda)
         ingestor = DataIngestor(model=self._encoder, store=store,
                                 max_batch_size=max_batch_size)
         ingestor.ingest_nac(path=nac_path, tile_size=tile_size, stride=stride)
@@ -363,6 +369,7 @@ class LunaPipeline:
                     trace[f"ingest_tiles_per_s_{pid}"] = len(store._metadata) / t_ingest_elapsed if t_ingest_elapsed > 0 else 0
                 
                 total_tiles += len(store._metadata)
+                metadata_map[pid] = metadata
                 
                 t_compile_start = time.perf_counter()
                 index_path = self._save_index(store, nac_path)
@@ -488,9 +495,6 @@ class LunaPipeline:
         metrics: bool = False,
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> list[RefinedHit] | tuple[list[RefinedHit], MetricsReport]:
-        from luna.models import ESSARefiner
-        from luna.config import WEIGHTS_DIR
-
         # Initialize trace dict if metrics is requested
         if metrics and trace is None:
             trace = {}
@@ -499,42 +503,76 @@ class LunaPipeline:
         if on_progress is not None:
             os.environ["LUNA_DISABLE_TQDM"] = "1"
 
-        log.info("Initializing ESSARefiner stage on %s …", self._device)
-        if on_progress:
-            on_progress("Initializing ESSARefiner", 0, 1)
-        
-        checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
-        refiner = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
-
-        if on_progress:
-            on_progress("Initializing ESSARefiner", 1, 1)
-            on_progress("Running ESSA refinement", 0, len(hits))
-
         total_refine_start = time.perf_counter()
         
-        log.info("Passing %d candidates to ESSA (score_thr=%.2f) …", len(hits), score_thr)
-        refined = refiner.refine(
-            hits=hits,
-            out_dir=output_dir,
-            score_thr=score_thr,
-            essa_min_score=essa_min_score,
-            save_debug_plots=output_dir is not None,
-            skip_preprocess=skip_preprocess,
-            trace=trace,
-        )
+        # Select refiner based on type
+        if self._refiner_type == "dino":
+            from luna.models.dino_refiner import DINORefiner
+            
+            log.info("Initializing DINORefiner stage on %s …", self._device)
+            if on_progress:
+                on_progress("Initializing DINORefiner", 0, 1)
+            
+            refiner = DINORefiner(device=self._device)
+            
+            if on_progress:
+                on_progress("Initializing DINORefiner", 1, 1)
+                on_progress("Running DINO refinement", 0, len(hits))
+            
+            log.info("Passing %d candidates to DINO refiner (score_thr=%.2f) …", len(hits), score_thr)
+            refined = refiner.refine(
+                hits=hits,
+                out_dir=output_dir,
+                score_thr=score_thr,
+                esa_min_score=essa_min_score,
+                save_debug_plots=False,
+                skip_preprocess=True,
+                trace=trace,
+                save_attention_overlay=self._config.save_attention_overlay if hasattr(self._config, 'save_attention_overlay') else False,
+            )
+        else:  # esa (default)
+            from luna.models import ESSARefiner
+            from luna.config import WEIGHTS_DIR
+
+            log.info("Initializing ESSARefiner stage on %s …", self._device)
+            if on_progress:
+                on_progress("Initializing ESSARefiner", 0, 1)
+            
+            checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
+            refiner = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
+
+            if on_progress:
+                on_progress("Initializing ESSARefiner", 1, 1)
+                on_progress("Running ESSA refinement", 0, len(hits))
+
+            log.info("Passing %d candidates to ESSA (score_thr=%.2f) …", len(hits), score_thr)
+            refined = refiner.refine(
+                hits=hits,
+                out_dir=output_dir,
+                score_thr=score_thr,
+                esa_min_score=essa_min_score,
+                save_debug_plots=output_dir is not None,
+                skip_preprocess=skip_preprocess,
+                trace=trace,
+            )
         
         if on_progress:
-            on_progress("Running ESSA refinement", len(hits), len(hits))
-            on_progress("ESSA refinement complete", 1, 1)
+            if self._refiner_type == "dino":
+                on_progress("Running DINO refinement", len(hits), len(hits))
+                on_progress("DINO refinement complete", 1, 1)
+            else:
+                on_progress("Running ESSA refinement", len(hits), len(hits))
+                on_progress("ESSA refinement complete", 1, 1)
 
         total_refine_elapsed = time.perf_counter() - total_refine_start
         
         if trace is not None:
             trace["total_s"] = trace.get("total_scan_s", 0.0) + total_refine_elapsed
-            trace["essa_s"] = total_refine_elapsed
-            trace["essa_hits_in"] = len(hits)
-            trace["essa_hits_out"] = len(refined)
-            trace["essa_refinement_ratio"] = len(refined) / len(hits) if len(hits) > 0 else 0.0
+            refiner_key = "dino" if self._refiner_type == "dino" else "essa"
+            trace[f"{refiner_key}_s"] = total_refine_elapsed
+            trace[f"{refiner_key}_hits_in"] = len(hits)
+            trace[f"{refiner_key}_hits_out"] = len(refined)
+            trace[f"{refiner_key}_refinement_ratio"] = len(refined) / len(hits) if len(hits) > 0 else 0.0
         
         if metrics:
             report = MetricsReport.from_trace(trace)
