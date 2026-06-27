@@ -201,89 +201,94 @@ class DINOEncoder:
     
     @torch.inference_mode()
     def _encode_with_attention(self, tensor: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-        """Encode with attention map extraction.
-        
-        For DINOv3, instead of trying to hook into attention layers (which is
-        complex and unreliable), we create an attention map based on the L2 norm
-        of patch tokens. This gives a reasonable approximation of where the
-        model is "paying attention".
-        """
+        """Encode with actual attention map extraction from the last self-attention layer."""
         import torch.nn.functional as F
+        import math
         
+        # Capture self-attention from the last transformer block
+        captured_attn = []
+        last_block = None
+        orig_compute_attention = None
+        
+        try:
+            last_block = self._backbone_module.blocks[-1]
+            orig_compute_attention = last_block.attn.compute_attention
+            
+            def hook_compute_attention(qkv, attn_bias=None, rope=None):
+                B, N, _ = qkv.shape
+                C = last_block.attn.qkv.in_features
+                qkv_reshaped = qkv.reshape(B, N, 3, last_block.attn.num_heads, C // last_block.attn.num_heads)
+                q, k, v = torch.unbind(qkv_reshaped, 2)
+                q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
+                if rope is not None:
+                    q, k = last_block.attn.apply_rope(q, k, rope)
+                attn = (q @ k.transpose(-2, -1)) * last_block.attn.scale
+                attn = attn.softmax(dim=-1)
+                captured_attn.append(attn.mean(dim=1).detach())
+                x = attn @ v
+                x = x.transpose(1, 2)
+                return x.reshape([B, N, C])
+                
+            last_block.attn.compute_attention = hook_compute_attention
+        except Exception as e:
+            log.warning(f"Could not setup attention hook: {e}")
+            
         # Forward pass
         features_dict = self._backbone_module.forward_features(tensor)
         features = features_dict["x_norm_clstoken"]
         
         if self.matryoshka_dim < features.shape[1]:
             features = features[:, : self.matryoshka_dim]
-        
+            
         embeddings = F.normalize(features, p=2, dim=-1).cpu().float().numpy()
         
-        # Create attention map from patch token norms
-        # x_norm_patchtokens has shape (B, N_patches, D) where N_patches = (H/patch_size) * (W/patch_size)
-        if "x_norm_patchtokens" in features_dict:
-            patch_tokens = features_dict["x_norm_patchtokens"]  # (B, N_patches, D)
+        # Restore original compute_attention method
+        if last_block is not None and orig_compute_attention is not None:
+            last_block.attn.compute_attention = orig_compute_attention
             
-            # Compute L2 norm of each patch token: (B, N_patches)
-            patch_norms = torch.norm(patch_tokens, p=2, dim=-1)
+        # Process captured attention map
+        if captured_attn:
+            attn_matrix = captured_attn[0] # Shape: (B, N_tokens, N_tokens)
             
-            # Get spatial dimensions
+            # The CLS token attention to other tokens is at index 0
+            cls_attn = attn_matrix[:, 0, :] # Shape: (B, N_tokens)
+            
+            # Get image spatial dimensions
             img_h, img_w = tensor.shape[-2], tensor.shape[-1]
-            n_patches = patch_norms.shape[-1]
+            patch_size = 16 # DINOv3 VitS16 patch size
+            n_spatial_h = img_h // patch_size
+            n_spatial_w = img_w // patch_size
+            n_spatial_total = n_spatial_h * n_spatial_w
             
-            # Calculate patch grid size
-            # DINOv3 vits16: patch_size = 16, so for 256x256 we have 16x16 = 256 patches
-            # But the actual number depends on the model configuration
-            n_spatial = int(n_patches ** 0.5)
+            # The spatial patch tokens are the last n_spatial_total tokens in the sequence
+            cls_attn_spatial = cls_attn[:, -n_spatial_total:] # Shape: (B, n_spatial_total)
             
-            # Check if it's a perfect square
-            if n_spatial * n_spatial == n_patches:
-                # Reshape to 2D
-                attention_spatial = patch_norms.reshape(tensor.shape[0], n_spatial, n_spatial)
-            else:
-                # Not a perfect square, create a 2D map by finding the closest square
-                # Use the first n_spatial*n_spatial patches
-                import math
-                n_spatial = int(math.sqrt(n_patches))
-                n_use = n_spatial * n_spatial
-                
-                if n_patches > n_use:
-                    # Truncate to square number
-                    patch_norms = patch_norms[:, :n_use]
-                elif n_patches < n_use:
-                    # Pad with minimum values
-                    min_val = patch_norms.min()
-                    padding = torch.full((tensor.shape[0], n_use - n_patches), 
-                                       min_val, device=patch_norms.device)
-                    patch_norms = torch.cat([patch_norms, padding], dim=-1)
-                
-                attention_spatial = patch_norms.reshape(tensor.shape[0], n_spatial, n_spatial)
+            # Reshape to 2D spatial grid
+            attention_spatial = cls_attn_spatial.reshape(tensor.shape[0], n_spatial_h, n_spatial_w)
             
-            # Normalize attention map to [0, 1]
-            attention_spatial = (attention_spatial - attention_spatial.min()) / \
-                                (attention_spatial.max() - attention_spatial.min() + 1e-8)
+            # Normalize attention map to [0, 1] for visualization
+            attn_min = attention_spatial.min(dim=-1, keepdim=True)[0].min(dim=-2, keepdim=True)[0]
+            attn_max = attention_spatial.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            attention_spatial = (attention_spatial - attn_min) / (attn_max - attn_min + 1e-8)
             
-            # Resize to match input image size
+            # Resize/interpolate to match input image dimensions
             attention_resized = F.interpolate(
-                attention_spatial.unsqueeze(1),  # (B, 1, n_spatial, n_spatial)
+                attention_spatial.unsqueeze(1), # (B, 1, n_spatial_h, n_spatial_w)
                 size=(img_h, img_w),
                 mode='bilinear',
                 align_corners=False
-            ).squeeze(1)  # (B, H, W)
+            ).squeeze(1) # (B, H, W)
             
             attention_map = attention_resized.cpu().float().numpy()
         else:
             # Fallback: create a center-focused attention map
-            # If x_norm_patchtokens is not available
             h, w = tensor.shape[-2], tensor.shape[-1]
             y, x = np.ogrid[:h, :w]
             center_y, center_x = h // 2, w // 2
             r2 = (x - center_x)**2 + (y - center_y)**2
             sigma = min(h, w) / 4
             attention_map = np.exp(-r2 / (2 * sigma**2)).astype(np.float32)
-            # Add batch dimension
             attention_map = attention_map[np.newaxis, ...]
-            # Expand to match batch size
             attention_map = np.tile(attention_map, (tensor.shape[0], 1, 1))
-        
+            
         return embeddings, attention_map

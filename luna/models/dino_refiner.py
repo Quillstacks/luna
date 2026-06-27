@@ -234,20 +234,8 @@ class DINORefiner:
                 
                 batch_3ch_uint8 = (batch_3ch * 255).astype(np.uint8)
                 
-                if save_attention_overlay and out_dir is not None:
-                    embedding, attention_map = encoder.encode(batch_3ch_uint8, return_attention=True)
-                    from luna.utils.attention_visualizer import save_attention_overlay
-                    tile_uint8 = (norm_tile * 255).astype(np.uint8)
-                    overlay_path = out_dir / f"{pid}_{hit.x_offset}_{hit.y_offset}_attention.png"
-                    # Squeeze attention map in case it has batch dimension
-                    attention_map = np.squeeze(attention_map)
-                    save_attention_overlay(tile_uint8, attention_map, overlay_path)
-                    # Encoder returns shape (1, 384) for single tile, flatten to (384,)
-                    embedding = embedding.flatten()
-                else:
-                    embedding = encoder.encode(batch_3ch_uint8)
-                    # Encoder returns shape (1, 384) for single tile, flatten to (384,)
-                    embedding = embedding.flatten()
+                embedding = encoder.encode(batch_3ch_uint8)
+                embedding = embedding.flatten()
                 
                 # Encoder already returns L2-normalized embeddings
                 # Compute cosine similarity: (N, 384) @ (384,) -> (N,)
@@ -301,10 +289,52 @@ class DINORefiner:
                 essa_score=hit.essa_score,
                 essa_class=hit.essa_class,
                 essa_lon=hit.essa_lon,
-                esa_lat=hit.esa_lat,
+                essa_lat=hit.essa_lat,
                 dino_similarity=hit.dino_similarity,
             )
             for i, hit in enumerate(all_refined)
         ]
+
+        # Generate and save attention map overlays with ranks!
+        if save_attention_overlay and out_dir is not None:
+            log.info("Generating and saving attention overlays with sorted ranks...")
+            refined_by_pid = defaultdict(list)
+            for hit in all_refined:
+                refined_by_pid[hit.product_id].append(hit)
+                
+            for pid, pid_hits in refined_by_pid.items():
+                nac_path = SCRATCH_DIR / f"{pid}.IMG"
+                if not nac_path.exists():
+                    nac_path = fetch_nac(pid, dest_dir=SCRATCH_DIR)
+                
+                with open(nac_path, "rb") as f:
+                    label = pvl.load(f)
+                    header_bytes = _label_byte_count(label)
+                    img_block = label["IMAGE"]
+                    lines = int(img_block["LINES"])
+                    samples = int(img_block["LINE_SAMPLES"])
+                
+                img = np.memmap(nac_path, dtype=np.int16, mode='r', offset=header_bytes, shape=(lines, samples))
+                
+                for hit in pid_hits:
+                    x0 = hit.x_offset
+                    y0 = hit.y_offset
+                    tile = img[y0:y0+TILE_SIZE, x0:x0+TILE_SIZE].copy()
+                    
+                    valid = tile[tile > LROC_VALID_MIN]
+                    lo, hi = (float(valid.min()), float(valid.max())) if len(valid) > 0 else (0.0, 1.0)
+                    norm_tile = (tile - lo) / (hi - lo) if hi > lo else np.zeros_like(tile, dtype=np.float32)
+                    
+                    batch_3ch = np.stack([norm_tile] * 3, axis=0)
+                    batch_3ch = np.expand_dims(batch_3ch, 0)
+                    batch_3ch_uint8 = (batch_3ch * 255).astype(np.uint8)
+                    
+                    _, attention_map = encoder.encode(batch_3ch_uint8, return_attention=True)
+                    from luna.utils.attention_visualizer import save_attention_overlay as save_overlay
+                    tile_uint8 = (norm_tile * 255).astype(np.uint8)
+                    
+                    overlay_path = out_dir / f"rank_{hit.rank:03d}_{pid}_{hit.x_offset}_{hit.y_offset}_attention.png"
+                    attention_map = np.squeeze(attention_map)
+                    save_overlay(tile_uint8, attention_map, overlay_path)
         
         return all_refined

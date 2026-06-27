@@ -107,9 +107,11 @@ class DataIngestor:
 
         return _fn
 
+    @staticmethod
     def _build_coord_fn(
-        self, path: Path, img_geometry, lines: int, samples: int
+        path: Path, img_geometry, lines: int, samples: int
     ) -> Callable[[float, float], tuple[float, float]]:
+        from luna.io import pixel_to_lonlat, LinearProjection
         try:
             proj = LinearProjection.from_nac_geometry(img_geometry, lines=lines, samples=samples)
             log.info("Using bilinear projection for %s", path.name)
@@ -119,7 +121,7 @@ class DataIngestor:
 
         from luna.io.spice_project import ensure_kernels_for_label
         ensure_kernels_for_label(path)
-        coord_fn = self._build_spice_coord_fn(path)
+        coord_fn = DataIngestor._build_spice_coord_fn(path)
         coord_fn(samples / 2.0, lines / 2.0)
         log.info("SPICE kernels active for %s", path.name)
         return coord_fn
@@ -166,7 +168,6 @@ class DataIngestor:
         """Yield (embeddings, metadata) batches for a single NAC."""
         img            = read_nac(path, geometry=True)
         lines, samples = img.pixels.shape
-        coord_fn       = self._build_coord_fn(path, img.geometry, lines, samples)
         stripe         = self.screener.submit_nac(path, width=samples, height=lines)
 
         total_tiles = (
@@ -188,8 +189,8 @@ class DataIngestor:
                         y_offset   = int(y),
                         width      = tile_size,
                         height     = tile_size,
-                        lon        = coord_fn(x + tile_size / 2.0, y + tile_size / 2.0)[0],
-                        lat        = coord_fn(x + tile_size / 2.0, y + tile_size / 2.0)[1],
+                        lon        = 0.0,
+                        lat        = 0.0,
                     )
                     for x, y in offsets
                 ]

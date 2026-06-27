@@ -164,8 +164,32 @@ class LunaPipeline:
         Binarization is deferred to ``_search`` so the same float32 vectors
         can be reused across multiple NACs without re-encoding.
         """
-        query_dir = Path(query_dir)
-        paths     = sorted(query_dir.glob("*.npy"))
+        query_path = Path(query_dir)
+        
+        # 1. If query_dir points directly to a precompiled file
+        if query_path.is_file():
+            arr = np.load(query_path).astype(np.float32)
+            if arr.ndim == 2 and arr.shape[1] == 384:
+                log.info("Loaded query database from file %s, shape %s.", query_path.name, arr.shape)
+                return arr
+                
+        # 2. If query_dir is a directory, check for precompiled files first
+        if query_path.is_dir():
+            # Check locally in query_dir
+            ref_file = query_path / "dino_reference.npy"
+            if not ref_file.exists():
+                # Check in standard data directory
+                from luna.config import DATA_DIR
+                ref_file = DATA_DIR / "dino_reference.npy"
+                
+            if ref_file.exists():
+                arr = np.load(ref_file).astype(np.float32)
+                if arr.ndim == 2 and arr.shape[1] == 384:
+                    log.info("Loaded precompiled query database from %s, shape %s.", ref_file, arr.shape)
+                    return arr
+
+        # 3. Fallback: load and encode individual query npy tiles
+        paths = sorted(query_path.glob("*.npy")) if query_path.is_dir() else [query_path]
         if not paths:
             raise FileNotFoundError(f"No .npy files found in {query_dir}")
 
@@ -425,11 +449,27 @@ class LunaPipeline:
                 top_k=top_k, min_dist_px=min_dist_px, trace=trace
             )
 
+            coord_fn = None
+            nac_path = scratch_dir / f"{pid}.IMG"
+            
             for rank, (idx, votes, score) in enumerate(nms_hits, start=len(all_hits) + 1):
                 meta = metadata[idx]
+                lat, lon = meta.lat, meta.lon
+                if lat == 0.0 and lon == 0.0:
+                    if coord_fn is None:
+                        from luna.io.nac_reader import read_nac
+                        from luna.screening.candidate_gen import DataIngestor
+                        img = read_nac(nac_path, geometry=True)
+                        lines, samples = img.pixels.shape
+                        coord_fn = DataIngestor._build_coord_fn(nac_path, img.geometry, lines, samples)
+                    
+                    x_center = meta.x_offset + meta.width / 2.0
+                    y_center = meta.y_offset + meta.height / 2.0
+                    lon, lat = coord_fn(x_center, y_center)
+                
                 all_hits.append(CandidateHit(
                     rank=rank, product_id=pid, votes=votes, score=score,
-                    lon=meta.lon, lat=meta.lat,
+                    lon=lon, lat=lat,
                     x_offset=meta.x_offset, y_offset=meta.y_offset,
                 ))
 

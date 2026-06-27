@@ -23,33 +23,66 @@ log = logging.getLogger(__name__)
 
 def load_lpa_catalog(catalog_path: Path) -> list[dict]:
     """Load Lunar Pit Atlas catalog."""
-    import pandas as pd
-    df = pd.read_csv(catalog_path)
+    import csv
+    import json
+    
+    # Load pit_nacs to map pit_id -> product_id
+    pit_nacs_path = catalog_path.parent / "pit_nacs.json"
+    pit_nacs = {}
+    if pit_nacs_path.exists():
+        try:
+            pit_nacs = json.loads(pit_nacs_path.read_text())
+        except Exception:
+            pass
+
     pits = []
-    for _, row in df.iterrows():
-        pits.append({
-            "pit_id": int(row["pit_id"]),
-            "lon": float(row["lon"]),
-            "lat": float(row["lat"]),
-            "diameter": float(row["funnel_max_m"]),
-            "product_id": row.get("product_id", ""),
-        })
+    with open(catalog_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            pit_id = row.get("id") or row.get("pit_id")
+            if not pit_id:
+                continue
+            
+            # Find a product_id from the catalog row or pit_nacs
+            product_id = row.get("product_id") or row.get("reference_nac")
+            if not product_id and str(pit_id) in pit_nacs:
+                nacs = pit_nacs[str(pit_id)]
+                if nacs:
+                    product_id = nacs[0].get("product")
+            
+            lon = row.get("longitude") or row.get("lon")
+            lat = row.get("latitude") or row.get("lat")
+            diameter = row.get("funnel_max_m") or row.get("diameter")
+
+            pits.append({
+                "pit_id": int(pit_id),
+                "lon": float(lon) if lon else 0.0,
+                "lat": float(lat) if lat else 0.0,
+                "diameter": float(diameter) if diameter else 0.0,
+                "product_id": product_id or "",
+            })
     return pits
 
 
 def extract_pit_tile(nac_path: Path, lon: float, lat: float, size: int = 256) -> np.ndarray | None:
     """Extract a tile centered at (lon, lat) from a NAC image."""
     from luna.io.spice_project import ground_to_image
-    
-    # Get image dimensions
-    img = np.memmap(nac_path, dtype=np.int16, mode='r')
-    height, width = img.shape
+    from luna.io.nac_reader import read_nac
     
     try:
+        # Load NAC image geometry and dimensions
+        nac_img = read_nac(nac_path, geometry=True)
+        height, width = nac_img.lines, nac_img.samples
+        
         # Project lon/lat to pixel coordinates
         label_path = nac_path.with_suffix('.IMG.lbl')
         if not label_path.exists():
             label_path = nac_path.parent / (nac_path.stem + '.lbl')
+        if not label_path.exists():
+            label_path = nac_path
+            
+        from luna.io.spice_project import ground_to_image, ensure_kernels_for_label
+        ensure_kernels_for_label(str(label_path))
         
         x_px, y_px = ground_to_image(str(label_path), lon, lat)
         
@@ -63,7 +96,7 @@ def extract_pit_tile(nac_path: Path, lon: float, lat: float, size: int = 256) ->
         x0 = max(0, min(x0, width - size))
         y0 = max(0, min(y0, height - size))
         
-        tile = img[y0:y0+size, x0:x0+size].copy()
+        tile = nac_img.pixels[y0:y0+size, x0:x0+size].copy()
         return tile
     except Exception as e:
         log.warning("Failed to extract tile for (%f, %f): %s", lon, lat, e)
@@ -84,7 +117,9 @@ def normalize_tile(tile: np.ndarray) -> np.ndarray:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare DINO reference embeddings from LPA pits")
-    parser.add_argument("--catalog", type=Path, default=DATA_DIR / "catalogs" / "lpa.csv",
+    root_catalog = Path(__file__).resolve().parent.parent / "catalogs" / "lpa.csv"
+    default_catalog = root_catalog if root_catalog.exists() else DATA_DIR / "catalogs" / "lpa.csv"
+    parser.add_argument("--catalog", type=Path, default=default_catalog,
                         help="Path to LPA catalog CSV")
     parser.add_argument("--output", type=Path, default=DATA_DIR / "dino_reference.npy",
                         help="Output path for reference embeddings")
@@ -119,12 +154,44 @@ def main() -> None:
         )
     
     encoder = DINOEncoder(
-        lora_dir=str(WEIGHTS_DIR / "lunar-dinov3-lora"),
-        base_weights_path=str(WEIGHTS_DIR / "lunar-dinov3-lora"),
+        lora_dir="F1nnSBK/lunar-dinov3-lora",
+        base_weights_path="F1nnSBK/lunar-dinov3-lora",
         matryoshka_dim=384,
         device=device,
     )
     
+    # Check if we can build directly from pre-extracted tiles in data/_scratch/pits/
+    pits_dir = DATA_DIR / "_scratch" / "pits"
+    pre_extracted_files = list(pits_dir.glob("*.npy")) if pits_dir.exists() else []
+    # Filter out dino_reference.npy if it is there
+    pre_extracted_files = [f for f in pre_extracted_files if f.name != "dino_reference.npy"]
+    
+    if pre_extracted_files:
+        log.info("Found %d pre-extracted pit tiles in %s. Building reference database from them directly...", 
+                 len(pre_extracted_files), pits_dir)
+        if args.limit:
+            pre_extracted_files = pre_extracted_files[:args.limit]
+            
+        embeddings: list[np.ndarray] = []
+        for fpath in tqdm(pre_extracted_files, desc="Encoding pre-extracted tiles"):
+            try:
+                tile = np.load(fpath)
+                if tile.shape != (256, 256):
+                    continue
+                norm_tile = normalize_tile(tile)
+                batch = np.expand_dims(norm_tile, 0)
+                batch = (batch * 255).astype(np.uint8)
+                embedding = encoder.encode(batch)
+                embeddings.append(embedding[0])
+            except Exception as e:
+                log.warning("Failed to process pre-extracted tile %s: %s", fpath.name, e)
+                
+        if embeddings:
+            embeddings_array = np.stack(embeddings)
+            np.save(args.output, embeddings_array)
+            log.info("Saved %d reference embeddings to %s", len(embeddings_array), args.output)
+            return
+            
     # Collect embeddings
     embeddings: list[np.ndarray] = []
     processed = 0
@@ -162,13 +229,8 @@ def main() -> None:
             norm_tile = normalize_tile(tile)
             batch = np.expand_dims(norm_tile, 0)
             batch = (batch * 255).astype(np.uint8)
-            batch_3ch = np.stack([batch[0]] * 3, axis=0)
-            
             # Get DINO embedding
-            with torch.no_grad():
-                import torch
-                torch_batch = torch.from_numpy(batch_3ch).float() / 255.0
-                embedding = encoder.encode(torch_batch.to(device)).cpu().numpy()
+            embedding = encoder.encode(batch)
             
             embeddings.append(embedding[0])  # (384,)
             processed += 1
