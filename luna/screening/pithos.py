@@ -41,13 +41,21 @@ _THIRD_PARTY = Path(__file__).resolve().parents[2] / "third_party" / "pithos"
 def _find_lib(use_cuda: bool = False) -> Path:
     system = platform.system()
     
-    if use_cuda and system == "Linux":
-        candidates = [
-            _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
-            _THIRD_PARTY / "libpithos-cuda.so",
-            _THIRD_PARTY / "libpithos-linux-x86_64.so",
-            _THIRD_PARTY / "libpithos.so",
-        ]
+    if system == "Linux":
+        if use_cuda:
+            candidates = [
+                _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
+                _THIRD_PARTY / "libpithos-cuda.so",
+                _THIRD_PARTY / "libpithos-linux-x86_64.so",
+                _THIRD_PARTY / "libpithos.so",
+            ]
+        else:
+            candidates = [
+                _THIRD_PARTY / "libpithos-linux-x86_64.so",
+                _THIRD_PARTY / "libpithos.so",
+                _THIRD_PARTY / "libpithos-cuda.so",
+                _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
+            ]
     elif system == "Darwin":
         candidates = [
             _THIRD_PARTY / "libpithos-macos-aarch64.dylib",
