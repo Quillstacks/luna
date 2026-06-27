@@ -177,7 +177,7 @@ class PithosMIDB:
             cls._instance = instance
         return cls._instance
 
-    def __init__(self, lib_path: str | Path | None = None) -> None:
+    def __init__(self, lib_path: str | Path | None = None, use_cuda: bool = False) -> None:
         """No-op: prevents re-initialization of the singleton state."""
 
     # ------------------------------------------------------------------

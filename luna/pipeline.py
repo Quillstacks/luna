@@ -172,11 +172,19 @@ class LunaPipeline:
         vecs = []
         for p in paths:
             arr   = np.load(p).astype(np.float32)
-            valid = arr[arr > LROC_VALID_MIN]
-            lo, hi = (valid.min(), valid.max()) if valid.size > 0 else (0.0, 1.0)
-            norm  = np.clip((arr - lo) / (hi - lo + 1e-6), 0, 1)
-            batch = (np.expand_dims(norm, 0) * 255).astype(np.uint8)
-            vecs.append(self._encoder.encode(batch))
+            if arr.ndim == 2 and arr.shape[1] == 384:
+                # Already encoded embeddings (e.g. dino_reference.npy)
+                vecs.append(arr)
+            elif arr.ndim == 1 and arr.shape[0] == 384:
+                # Single already encoded embedding
+                vecs.append(np.expand_dims(arr, 0))
+            else:
+                # Raw image slice, needs encoding
+                valid = arr[arr > LROC_VALID_MIN]
+                lo, hi = (valid.min(), valid.max()) if valid.size > 0 else (0.0, 1.0)
+                norm  = np.clip((arr - lo) / (hi - lo + 1e-6), 0, 1)
+                batch = (np.expand_dims(norm, 0) * 255).astype(np.uint8)
+                vecs.append(self._encoder.encode(batch))
 
         if self._device == "mps":
             torch.mps.empty_cache()
@@ -550,7 +558,7 @@ class LunaPipeline:
                 hits=hits,
                 out_dir=output_dir,
                 score_thr=score_thr,
-                esa_min_score=essa_min_score,
+                essa_min_score=essa_min_score,
                 save_debug_plots=output_dir is not None,
                 skip_preprocess=skip_preprocess,
                 trace=trace,
