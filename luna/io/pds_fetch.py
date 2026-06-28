@@ -38,6 +38,9 @@ def _shared_index() -> PDSIndex:
 class BandwidthLimiter:
     """Rate limiter for controlling download bandwidth usage.
     
+    Uses a token bucket algorithm to enforce a maximum byte rate.
+    Note: The input parameter is in MB/s (Megabytes per second), not Mbps (Megabits).
+    
     Attributes:
         max_bytes_per_second: Maximum bytes per second allowed (None = unlimited).
         tokens: Current available tokens (bytes) in the bucket.
@@ -48,13 +51,13 @@ class BandwidthLimiter:
         self.max_bytes_per_second = max_bytes_per_second
         self.tokens: float = 0.0
         self.last_update: float = time.perf_counter()
-        
-        # Initialize with full bucket if limited
         if self.max_bytes_per_second is not None:
             self.tokens = float(self.max_bytes_per_second)
     
     def acquire(self, num_bytes: int) -> float:
         """Acquire permission to transfer num_bytes.
+        
+        Uses a token bucket algorithm to enforce bandwidth limiting.
         
         Args:
             num_bytes: Number of bytes to be transferred.
@@ -69,20 +72,16 @@ class BandwidthLimiter:
         elapsed = now - self.last_update
         self.last_update = now
         
-        # Add tokens earned during elapsed time
         self.tokens += elapsed * self.max_bytes_per_second
-        
-        # Cap tokens at max bucket size (1 second worth of data)
         self.tokens = min(self.tokens, float(self.max_bytes_per_second))
         
-        # If we don't have enough tokens, calculate wait time
-        if self.tokens < num_bytes:
-            needed = num_bytes - self.tokens
-            wait_time = needed / self.max_bytes_per_second
+        self.tokens -= num_bytes
+        
+        if self.tokens < 0:
+            wait_time = -self.tokens / self.max_bytes_per_second
+            self.tokens = 0
             return wait_time
         
-        # Consume tokens
-        self.tokens -= num_bytes
         return 0.0
 
 
@@ -112,9 +111,10 @@ def fetch_nac(
         force: If True, re-download even if file exists.
         retries: Number of retry attempts on network errors.
         backoff_s: Base backoff time in seconds for retries.
-        max_bandwidth_mbps: Optional bandwidth limit in megabytes per second.
-            If None, no limit is applied. If specified, download speed will
-            be capped at this rate to prevent network saturation.
+        max_bandwidth_mbps: Optional bandwidth limit in MB/s (Megabytes per second).
+            IMPORTANT: This is Megabytes, NOT Megabits! If None, no limit is applied.
+            If specified, download speed will be capped at this rate to prevent network
+            saturation. Example: 10 = 10 MB/s = 80 Mbps.
     
     Returns:
         Path to the downloaded .IMG file.
