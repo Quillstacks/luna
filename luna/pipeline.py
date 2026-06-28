@@ -482,10 +482,12 @@ class LunaPipeline:
             index_prefix = str(index_dir / f"pithos_{pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
             
-            if not force_reingest and index_exists:
+            # Always ensure the physical .IMG file exists if subsequent stages need it
+            # Even if index exists, we need the raw file for coordinate extraction in refinement
+            if not force_reingest and index_exists and nac_path.exists():
                 download_queue.put((pid, nac_path, None))
                 return
-                
+            
             if not nac_path.exists():
                 try:
                     log.info("Background Downloader: Fetching %s from PDS …", pid)
@@ -505,8 +507,13 @@ class LunaPipeline:
         def downloader_worker():
             # max_workers=3 limits concurrent downloads to 3 at a time.
             # Bounded queue blocks thread pool workers when it reaches maxsize=4.
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                executor.map(download_task, product_ids)
+            try:
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    executor.map(download_task, product_ids)
+            except KeyboardInterrupt:
+                log.warning("Downloader worker received interrupt signal. Shutting down gracefully...")
+            except Exception as e:
+                log.error("Downloader worker crashed: %s", e)
                     
         downloader_thread = threading.Thread(target=downloader_worker, daemon=True)
         downloader_thread.start()
