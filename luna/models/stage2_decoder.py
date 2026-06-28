@@ -92,17 +92,29 @@ class SpatialTokenExtractor:
         
         Args:
             features: Output dict from backbone.forward_features()
-                     Contains 'x' key with all tokens (B, num_patches+1, hidden_dim)
+                     Can contain various keys depending on DINOv3 version and config
         
         Returns:
             Spatial tokens only: (B, num_spatial_patches, hidden_dim)
         """
-        # DINOv3 forward_features returns dict with 'x' containing all tokens
-        all_tokens = features['x']  # Shape: (B, num_patches+1, hidden_dim)
-        
-        # Exclude CLS token (first token) and return spatial tokens
-        # Spatial tokens are from index 1 onwards
-        spatial_tokens = all_tokens[:, 1:, :]  # Shape: (B, num_patches, hidden_dim)
+        # Try different key names based on DINOv3 output format
+        # Newer versions with matryoshka_dim return normalized patch tokens
+        if 'x_norm_patchtokens' in features:
+            # This contains the normalized spatial patch tokens directly
+            # Shape: (B, num_patches, matryoshka_dim)
+            spatial_tokens = features['x_norm_patchtokens']
+        elif 'x_prenorm' in features:
+            # All tokens including CLS, shape: (B, num_patches+1, hidden_dim)
+            all_tokens = features['x_prenorm']
+            spatial_tokens = all_tokens[:, 1:, :]  # Exclude CLS token
+        elif 'x' in features:
+            # Standard DINOv3 output, shape: (B, num_patches+1, hidden_dim)
+            all_tokens = features['x']
+            spatial_tokens = all_tokens[:, 1:, :]  # Exclude CLS token
+        else:
+            # Fallback: list available keys
+            available_keys = list(features.keys())
+            raise KeyError(f"Could not find spatial tokens in features. Available keys: {available_keys}")
         
         return spatial_tokens
     
@@ -140,7 +152,19 @@ class GeometricReconstructor(nn.Module):
         Returns:
             Reconstructed 2D feature map: (B, output_dim, grid_h, grid_w)
         """
-        batch_size, num_patches, _ = spatial_tokens.shape
+        batch_size, num_patches, input_dim = spatial_tokens.shape
+        
+        # If input dimension doesn't match the projection layer, update it dynamically
+        if input_dim != self.projection.in_features:
+            # Create a new projection layer with the correct input dimension
+            new_proj = nn.Linear(input_dim, self.projection.out_features).to(spatial_tokens.device)
+            # Initialize with Kaiming normal
+            nn.init.kaiming_normal_(new_proj.weight, mode='fan_in', nonlinearity='relu')
+            nn.init.zeros_(new_proj.bias)
+            self.projection = new_proj
+            # Convert to same dtype as model
+            self.projection = self.projection.to(dtype=next(self.parameters()).dtype)
+            print(f"  Updated projection layer: {input_dim} -> {self.projection.out_features}")
         
         # Project channels first: (B, num_patches, input_dim) -> (B, num_patches, output_dim)
         projected = self.projection(spatial_tokens)
@@ -604,6 +628,8 @@ class Stage2DenseDecoder(nn.Module):
         
         # Phase 2: Geometric Reconstructor
         grid_size = self.token_extractor.get_spatial_grid_size(config.input_image_size)
+        # Use actual input dimension from DINOv3 (could be matryoshka_dim like 384)
+        # Default to config value, but this will be updated in forward pass
         self.reconstructor = GeometricReconstructor(
             input_dim=config.dino_hidden_dim,
             output_dim=config.projection_dim,
@@ -628,8 +654,11 @@ class Stage2DenseDecoder(nn.Module):
         # Initialize all layers
         self._initialize_weights()
         
-        # Move to device
+        # Move to device and use FP16 for MPS/CUDA
         self.to(self.device)
+        if self.device in ["mps", "cuda"]:
+            self.half()
+            print(f"  Using FP16 precision on {self.device}")
         
         # Phase 5: Physics Validator (separate, non-learnable)
         self.physics_validator = PhysicsValidator(
