@@ -68,8 +68,7 @@ def parse_arguments() -> argparse.Namespace:
     # Bandwidth limiting options
     parser.add_argument("--max-bandwidth", type=float, default=None,
                         help="Maximum download bandwidth limit in MB/s (e.g., 10 for 10 MB/s). "
-                             "If None, no limit is applied. Useful to prevent network saturation "
-                             "on shared networks like BelWue/DHBW (recommended: 5-10 MB/s)")
+                             "If None, no limit is applied. Useful to prevent network saturation ")
     
     # Output options
     parser.add_argument("--attention-overlay", action="store_true",
