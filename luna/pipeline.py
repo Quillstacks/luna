@@ -459,21 +459,72 @@ class LunaPipeline:
         if metrics and trace is None:
             trace = {}
 
-        metadata_map: dict[str, list[TileMetadata]] = {}
         total_tiles = 0
         total_scan_start = time.perf_counter()
         index_dir = self._config.index_dir
         scratch_dir = self._config.scratch_dir
 
-        for pid in product_ids:
+        t_dino_start = time.perf_counter()
+        query_vecs = self._encode_queries(query_dir)
+        if trace is not None:
+            trace["p1_pytorch_dino_inference"] = time.perf_counter() - t_dino_start
+
+        # Bounded pre-fetching queue (at most 4 downloaded files waiting on disk)
+        import queue
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        
+        # Bounded queue to store completed downloads
+        download_queue = queue.Queue(maxsize=4)
+        
+        def download_task(pid):
             nac_path     = scratch_dir / f"{pid}.IMG"
             index_prefix = str(index_dir / f"pithos_{pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
-
+            
+            if not force_reingest and index_exists:
+                download_queue.put((pid, nac_path, None))
+                return
+                
             if not nac_path.exists():
-                log.info("Fetching %s from PDS …", pid)
-                nac_path = fetch_nac(pid, dest_dir=scratch_dir)
+                try:
+                    log.info("Background Downloader: Fetching %s from PDS …", pid)
+                    max_bandwidth = getattr(self._config, 'max_bandwidth_mbps', None)
+                    fetched_path = fetch_nac(
+                        pid, 
+                        dest_dir=scratch_dir,
+                        max_bandwidth_mbps=max_bandwidth
+                    )
+                    download_queue.put((pid, fetched_path, None))
+                except Exception as e:
+                    log.error("Background Downloader: Failed to fetch %s: %s", pid, e)
+                    download_queue.put((pid, nac_path, e))
+            else:
+                download_queue.put((pid, nac_path, None))
+        
+        def downloader_worker():
+            # max_workers=3 limits concurrent downloads to 3 at a time.
+            # Bounded queue blocks thread pool workers when it reaches maxsize=4.
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                executor.map(download_task, product_ids)
+                    
+        downloader_thread = threading.Thread(target=downloader_worker, daemon=True)
+        downloader_thread.start()
 
+        all_hits: list[CandidateHit] = []
+
+        for _ in range(len(product_ids)):
+            # Retrieve completed download task from queue (blocks if queue is empty)
+            pid, nac_path, q_err = download_queue.get()
+            if q_err is not None:
+                log.error("Skipping %s due to background download error: %s", pid, q_err)
+                continue
+
+            index_prefix = str(index_dir / f"pithos_{pid}")
+            index_exists = Path(f"{index_prefix}.bin").exists()
+
+            # 1. Index Ingestion / Loading
+            metadata = None
             if force_reingest or not index_exists:
                 log.info("Ingesting %s …", pid)
                 t_ingest_start = time.perf_counter()
@@ -486,7 +537,6 @@ class LunaPipeline:
                     trace[f"ingest_tiles_per_s_{pid}"] = len(store._metadata) / t_ingest_elapsed if t_ingest_elapsed > 0 else 0
                 
                 total_tiles += len(store._metadata)
-                metadata_map[pid] = metadata
                 
                 t_compile_start = time.perf_counter()
                 index_path = self._save_index(store, nac_path)
@@ -503,29 +553,18 @@ class LunaPipeline:
                 log.info("Pithos index for %s already exists, loading metadata …", pid)
                 meta_path = f"{index_prefix}_meta.pkl"
                 with open(meta_path, "rb") as f:
-                    metadata_map[pid] = pickle.load(f)
+                    metadata = pickle.load(f)
                 
                 if trace is not None:
                     bin_path = f"{index_prefix}.bin"
                     if Path(bin_path).exists():
                         trace[f"index_size_bytes_{pid}"] = Path(bin_path).stat().st_size
 
-        t_dino_start = time.perf_counter()
-        query_vecs = self._encode_queries(query_dir)
-        if trace is not None:
-            trace["p1_pytorch_dino_inference"] = time.perf_counter() - t_dino_start
-
-        all_hits: list[CandidateHit] = []
-
-        for pid in product_ids:
-            index_prefix = str(index_dir / f"pithos_{pid}")
-            metadata     = metadata_map[pid]
-
+            # 2. Vector Search & NMS
             vote_map, best_dist = self._search(
                 index_prefix, metadata, query_vecs, k=search_k, trace=trace
             )
-            # Sort: lowest Hamming distance first
-            ranked   = sorted(
+            ranked = sorted(
                 vote_map.keys(),
                 key=lambda i: best_dist[i],
             )
@@ -534,9 +573,8 @@ class LunaPipeline:
                 top_k=top_k, min_dist_px=min_dist_px, trace=trace
             )
 
+            # 3. Resolve coordinates
             coord_fn = None
-            nac_path = scratch_dir / f"{pid}.IMG"
-            
             for rank, (idx, votes, score) in enumerate(nms_hits, start=len(all_hits) + 1):
                 meta = metadata[idx]
                 lat, lon = meta.lat, meta.lon
@@ -557,6 +595,15 @@ class LunaPipeline:
                     lon=lon, lat=lat,
                     x_offset=meta.x_offset, y_offset=meta.y_offset,
                 ))
+
+            # 4. Immediate cleanup of raw image if it has 0 candidate hits
+            if len(nms_hits) == 0:
+                if nac_path.exists():
+                    try:
+                        nac_path.unlink()
+                        log.info("Immediate cleanup: deleted %s (0 candidates)", nac_path.name)
+                    except Exception as e:
+                        log.warning("Failed to delete %s: %s", nac_path.name, e)
 
         # Apply spatial NMS to remove duplicates across overlapping orbits / image frames
         all_hits = apply_lunar_spatial_nms(all_hits, distance_threshold_meters=150.0)

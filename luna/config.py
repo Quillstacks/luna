@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -118,3 +119,6 @@ class LunaConfig:
     # Pithos options
     pithos_use_fp16: bool = False
     pithos_use_cuda: bool = False
+    
+    # Bandwidth limiting for downloads (in MB/s, None = unlimited)
+    max_bandwidth_mbps: Optional[float] = None

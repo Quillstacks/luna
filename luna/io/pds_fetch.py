@@ -35,6 +35,57 @@ def _shared_index() -> PDSIndex:
     return _index
 
 
+class BandwidthLimiter:
+    """Rate limiter for controlling download bandwidth usage.
+    
+    Attributes:
+        max_bytes_per_second: Maximum bytes per second allowed (None = unlimited).
+        tokens: Current available tokens (bytes) in the bucket.
+        last_update: Timestamp of last token addition.
+    """
+    
+    def __init__(self, max_bytes_per_second: Optional[float] = None) -> None:
+        self.max_bytes_per_second = max_bytes_per_second
+        self.tokens: float = 0.0
+        self.last_update: float = time.perf_counter()
+        
+        # Initialize with full bucket if limited
+        if self.max_bytes_per_second is not None:
+            self.tokens = float(self.max_bytes_per_second)
+    
+    def acquire(self, num_bytes: int) -> float:
+        """Acquire permission to transfer num_bytes.
+        
+        Args:
+            num_bytes: Number of bytes to be transferred.
+            
+        Returns:
+            Time in seconds to sleep before transferring, or 0.0 if no wait needed.
+        """
+        if self.max_bytes_per_second is None:
+            return 0.0
+            
+        now = time.perf_counter()
+        elapsed = now - self.last_update
+        self.last_update = now
+        
+        # Add tokens earned during elapsed time
+        self.tokens += elapsed * self.max_bytes_per_second
+        
+        # Cap tokens at max bucket size (1 second worth of data)
+        self.tokens = min(self.tokens, float(self.max_bytes_per_second))
+        
+        # If we don't have enough tokens, calculate wait time
+        if self.tokens < num_bytes:
+            needed = num_bytes - self.tokens
+            wait_time = needed / self.max_bytes_per_second
+            return wait_time
+        
+        # Consume tokens
+        self.tokens -= num_bytes
+        return 0.0
+
+
 def fetch_nac(
     product_id: str,
     dest_dir: str | os.PathLike = "data",
@@ -42,6 +93,7 @@ def fetch_nac(
     force: bool = False,
     retries: int = 3,
     backoff_s: float = 4.0,
+    max_bandwidth_mbps: Optional[float] = None,
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
 
@@ -52,6 +104,23 @@ def fetch_nac(
     Retries on transient network errors (``ConnectionError``, ``Timeout``,
     ``ChunkedEncodingError``) with exponential backoff; partial files are
     discarded between attempts.
+    
+    Args:
+        product_id: LROC NAC product ID to download.
+        dest_dir: Destination directory for the downloaded file.
+        url: Optional direct URL to download from.
+        force: If True, re-download even if file exists.
+        retries: Number of retry attempts on network errors.
+        backoff_s: Base backoff time in seconds for retries.
+        max_bandwidth_mbps: Optional bandwidth limit in megabytes per second.
+            If None, no limit is applied. If specified, download speed will
+            be capped at this rate to prevent network saturation.
+    
+    Returns:
+        Path to the downloaded .IMG file.
+    
+    Raises:
+        NACNotFoundError: If download fails after all retry attempts.
     """
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -61,6 +130,12 @@ def fetch_nac(
         return out
 
     resolved = url or _shared_index().url_for(product_id)
+    
+    # Initialize bandwidth limiter if limit is specified
+    bandwidth_limiter = BandwidthLimiter(
+        max_bytes_per_second=(max_bandwidth_mbps * (1024 ** 2)) if max_bandwidth_mbps is not None else None
+    )
+    
     transient = (
         requests.exceptions.ConnectionError,
         requests.exceptions.Timeout,
@@ -76,6 +151,12 @@ def fetch_nac(
                     total=total, unit="B", unit_scale=True, desc=pid
                 ) as bar:
                     for chunk in r.iter_content(chunk_size=1 << 16):
+                        # Apply bandwidth limiting
+                        if bandwidth_limiter.max_bytes_per_second is not None:
+                            wait_time = bandwidth_limiter.acquire(len(chunk))
+                            if wait_time > 0:
+                                time.sleep(wait_time)
+                        
                         f.write(chunk)
                         bar.update(len(chunk))
             return out

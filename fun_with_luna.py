@@ -65,6 +65,12 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--pithos-use-cuda", action="store_true", default=False,
                         help="Use CUDA-optimized Pithos build (requires CUDA hardware)")
     
+    # Bandwidth limiting options
+    parser.add_argument("--max-bandwidth", type=float, default=None,
+                        help="Maximum download bandwidth limit in MB/s (e.g., 10 for 10 MB/s). "
+                             "If None, no limit is applied. Useful to prevent network saturation "
+                             "on shared networks like BelWue/DHBW (recommended: 5-10 MB/s)")
+    
     # Output options
     parser.add_argument("--attention-overlay", action="store_true",
                         help="Generate and save attention map overlays for refined candidates")
@@ -87,10 +93,22 @@ def get_system_info() -> dict:
         device_name = "Apple Silicon (MPS)"
         ram_gb = psutil.virtual_memory().total / (1024 ** 3)
         vram_str = f"{ram_gb:.1f} GB (Unified)"
+
+    # Get active network interface link speed (no HTTP requests)
+    iface_info = "N/A"
+    try:
+        stats = psutil.net_if_stats()
+        for name, info in stats.items():
+            if name != "lo" and info.isup:
+                iface_info = f"{name} ({info.speed} Mbps Link)"
+                break
+    except Exception:
+        pass
             
     return {
         "device_name": device_name,
         "vram": vram_str,
+        "iface": iface_info,
     }
 
 
@@ -219,8 +237,10 @@ def main() -> None:
 
     info_table.add_row("Hardware Target", sys_info["device_name"])
     info_table.add_row("GPU Memory (VRAM)", sys_info["vram"])
+    info_table.add_row("Network Interface", sys_info["iface"])
     info_table.add_row("Resolved Batch Size", f"{MAX_BATCH_SIZE} tiles")
     info_table.add_row("Slicing Dimensions", f"{TILE_SIZE}x{TILE_SIZE} px (Stride: {STRIDE} px)")
+    info_table.add_row("Bandwidth Limit", f"{args.max_bandwidth} MB/s" if args.max_bandwidth else "Unlimited")
     info_table.add_row("Target NAC Product", args.nac)
     preprocess_text = "Skip (Reuse GeoTIFF Cache)" if args.skip_preprocess else "Full (ISIS Pipeline)"
     info_table.add_row("Preprocessing Mode", preprocess_text)
@@ -283,6 +303,7 @@ def main() -> None:
         save_attention_overlay=args.attention_overlay,
         pithos_use_fp16=args.pithos_use_fp16,
         pithos_use_cuda=args.pithos_use_cuda,
+        max_bandwidth_mbps=args.max_bandwidth,
     )
     pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora", refiner=args.refiner, config=config)
 
