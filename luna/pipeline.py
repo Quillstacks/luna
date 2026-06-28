@@ -164,6 +164,9 @@ class LunaPipeline:
         self._device  = device
         self._config  = config or LunaConfig()
         self._refiner_type = "essa"  # Default refiner
+        self._query_queries = None
+        self._query_families = None
+        self._query_thresholds = None
 
     # ------------------------------------------------------------------
     # Construction
@@ -305,6 +308,85 @@ class LunaPipeline:
         log.info("Encoded %d query anchors, shape %s.", len(paths), stacked.shape)
         return stacked
 
+    def _load_and_encode_pit_queries(self, pits_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Load all pit patches from directory, encode via DINOv3, and assign family IDs.
+        
+        Returns
+        -------
+        queries : np.ndarray, shape (N, 384) float32
+        families : np.ndarray, shape (N,) int32
+        thresholds : np.ndarray, shape (N,) int32
+        """
+        pits_path = Path(pits_dir)
+        pit_files = sorted(pits_path.glob("*.npy"))
+        
+        if not pit_files:
+            raise FileNotFoundError(f"No pit .npy files found in {pits_dir}")
+        
+        log.info("Loading %d pit patches from %s...", len(pit_files), pits_dir)
+        
+        # Collect all raw pit images
+        pit_images = []
+        for f in pit_files:
+            img = np.load(f)
+            if img.ndim == 2:
+                pit_images.append(img)
+        
+        if not pit_images:
+            raise ValueError("No valid pit images found")
+        
+        # Normalize and batch encode
+        normalized = []
+        for img in pit_images:
+            valid = img[img > LROC_VALID_MIN]
+            lo, hi = (valid.min(), valid.max()) if valid.size > 0 else (0.0, 1.0)
+            norm = np.clip((img - lo) / (hi - lo + 1e-6), 0, 1)
+            normalized.append(norm)
+        
+        # Batch encode in chunks to avoid OOM
+        batch_size = self._config.max_batch_size if self._config else 64
+        all_embeddings = []
+        
+        for i in range(0, len(normalized), batch_size):
+            batch_imgs = normalized[i:i + batch_size]
+            batch_input = np.stack([(img * 255).astype(np.uint8) for img in batch_imgs])
+            embeddings = self._encoder.encode(batch_input)
+            all_embeddings.append(embeddings)
+        
+        queries = np.concatenate(all_embeddings, axis=0).astype(np.float32)
+        num_queries = len(queries)
+        
+        # Assign family IDs (0-7) based on deterministic hash of filename
+        families = np.zeros(num_queries, dtype=np.int32)
+        for i, f in enumerate(pit_files):
+            family_id = hash(f.stem) % 8
+            families[i] = family_id
+        
+        # Define per-query Hamming thresholds
+        base_threshold = 32
+        thresholds = np.full(num_queries, base_threshold, dtype=np.int32)
+        
+        # Apply family-based scaling
+        family_counts = np.bincount(families, minlength=8)
+        for i in range(num_queries):
+            family_id = families[i]
+            count_factor = max(1, 10 - family_counts[family_id] // 4)
+            thresholds[i] = min(63, max(16, base_threshold - count_factor))
+        
+        if self._device == "mps":
+            torch.mps.empty_cache()
+        elif self._device == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()
+        
+        log.info(
+            "Encoded %d pit queries: shape %s, families: %s, threshold range: [%d, %d]",
+            num_queries, queries.shape, np.unique(families, return_counts=True),
+            thresholds.min(), thresholds.max()
+        )
+        
+        return queries, families, thresholds
+
     # ------------------------------------------------------------------
     # Search (Pithos Hamming KNN)
     # ------------------------------------------------------------------
@@ -314,72 +396,121 @@ class LunaPipeline:
         index_prefix: str,
         metadata: list[TileMetadata],
         query_vecs_f32: np.ndarray,
-        k: int,
+        families: np.ndarray | None = None,
+        thresholds: np.ndarray | None = None,
+        k: int = 1000,
         trace: dict = None,
-    ) -> tuple[dict, dict]:
+    ) -> tuple[list[int], np.ndarray]:
         """
-        Execute Pithos batch KNN search on raw float32 queries.
+        Execute Pithos search: Multi-Family Resonant Voting or legacy KNN.
 
+        Parameters
+        ----------
+        families : np.ndarray, shape (N,) int32 or None
+        thresholds : np.ndarray, shape (N,) int32 or None
+        k : int — used only for legacy KNN mode
+        
         Returns
         -------
-        vote_map  : dict[int, int]   — number of query anchors that hit each tile
-        best_dist : dict[int, float] — lowest Hamming distance seen for each tile
-                                       (lower = better, unlike FAISS inner-product)
+        candidate_indices : list[int] — indices of candidate tiles
+        voting_mask : np.ndarray, shape (len(metadata),) uint8 — raw bitmask
         """
         index_bin  = f"{index_prefix}.bin"
         index_name = Path(index_prefix).stem
+        total_records = len(metadata)
+        
         log.info("Loading Pithos index %s …", index_bin)
-
+        
         db = PithosMIDB()
         db.load_index(index_name, index_bin)
-        log.info(
-            "Executing Hamming KNN (k=%d) for %d query vectors …",
-            k, len(query_vecs_f32),
-        )
-        t_scan_start = time.perf_counter()
-        # Pithos accepts raw float32 queries — no pre-binarization needed
-        ids_mat, dists_mat = db.batch_search(index_name, query_vecs_f32, k)
-        db.drop_index(index_name)
-        if trace is not None:
-            trace["p1_pithos_index_scan"] = time.perf_counter() - t_scan_start
+        
+        if families is not None and thresholds is not None:
+            # Multi-Family Resonant Voting mode
+            log.info(
+                "Executing Multi-Family Resonant Voting for %d queries across %d families…",
+                len(query_vecs_f32), len(np.unique(families))
+            )
+            t_scan_start = time.perf_counter()
+            
+            voting_mask = np.zeros(total_records, dtype=np.uint8)
+            
+            resonant_count = db.query_planetary_grid(
+                index_name=index_name,
+                queries=query_vecs_f32,
+                families=families.astype(np.int32),
+                thresholds=thresholds.astype(np.int32),
+                voting_mask=voting_mask,
+            )
+            
+            if trace is not None:
+                trace["p1_pithos_resonant_voting"] = time.perf_counter() - t_scan_start
+            
+            db.drop_index(index_name)
+            
+            candidate_indices = np.where(voting_mask != 0)[0].tolist()
+            
+            log.info(
+                "Resonant voting retrieved %d candidate tiles (mask non-zero).", resonant_count
+            )
+            return candidate_indices, voting_mask
+        else:
+            # Legacy KNN fallback mode
+            log.info(
+                "Executing Hamming KNN (k=%d) for %d query vectors …",
+                k, len(query_vecs_f32),
+            )
+            t_scan_start = time.perf_counter()
+            ids_mat, dists_mat = db.batch_search(index_name, query_vecs_f32, k)
+            db.drop_index(index_name)
+            if trace is not None:
+                trace["p1_pithos_index_scan"] = time.perf_counter() - t_scan_start
 
-        vote_map:  dict[int, int]   = {}
-        best_dist: dict[int, float] = {}
+            vote_map: dict[int, int] = {}
+            best_dist: dict[int, float] = {}
 
-        for row in range(ids_mat.shape[0]):
-            for idx, dist in zip(ids_mat[row], dists_mat[row]):
-                idx = int(idx)
-                if idx < 0:
-                    continue
-                vote_map[idx] = vote_map.get(idx, 0) + 1
-                # Lower Hamming distance = closer match
-                if idx not in best_dist or dist < best_dist[idx]:
-                    best_dist[idx] = float(dist)
+            for row in range(ids_mat.shape[0]):
+                for idx, dist in zip(ids_mat[row], dists_mat[row]):
+                    idx = int(idx)
+                    if idx < 0:
+                        continue
+                    vote_map[idx] = vote_map.get(idx, 0) + 1
+                    if idx not in best_dist or dist < best_dist[idx]:
+                        best_dist[idx] = float(dist)
 
-        log.info(
-            "Search retrieved %d unique candidate tiles via voting.", len(vote_map)
-        )
-        return vote_map, best_dist
+            log.info(
+                "Search retrieved %d unique candidate tiles via voting.", len(vote_map)
+            )
+            voting_mask = np.zeros(total_records, dtype=np.uint8)
+            for idx in vote_map:
+                voting_mask[idx] = 1
+            return list(vote_map.keys()), voting_mask
 
     @staticmethod
     def _nms(
-        ranked_ids: list[int],
-        vote_map: dict,
-        best_dist: dict,
+        candidate_indices: list[int],
+        voting_mask: np.ndarray,
         metadata: list[TileMetadata],
         top_k: int,
         min_dist_px: float,
         trace: dict = None,
     ) -> list[tuple[int, int, float]]:
+        """Apply NMS on resonant voting or legacy KNN results.
+        
+        For resonant voting: uses voting_mask values as quality scores.
+        For legacy KNN: voting_mask is binary (0 or 1).
+        """
         log.info(
-            "Applying NMS (min_dist: %.1f px, max_targets: %d) on %d tiles …",
-            min_dist_px, top_k, len(ranked_ids),
+            "Applying NMS (min_dist: %.1f px, max_targets: %d) on %d candidate tiles …",
+            min_dist_px, top_k, len(candidate_indices),
         )
         t_nms_start = time.perf_counter()
         hits:     list[tuple[int, int, float]] = []
         accepted: list[tuple[float, float]]    = []
 
-        for idx in ranked_ids:
+        # Sort by voting_mask value (descending) for better hits first
+        sorted_indices = sorted(candidate_indices, key=lambda i: -voting_mask[i])
+
+        for idx in sorted_indices:
             meta = metadata[idx]
             cx   = meta.x_offset + meta.width  / 2.0
             cy   = meta.y_offset + meta.height / 2.0
@@ -391,7 +522,8 @@ class LunaPipeline:
                 continue
 
             accepted.append((cx, cy))
-            hits.append((idx, vote_map[idx], best_dist[idx]))
+            # votes = voting_mask value, score = positive quality metric
+            hits.append((idx, int(voting_mask[idx]), float(voting_mask[idx])))
             if len(hits) == top_k:
                 break
 
@@ -465,7 +597,26 @@ class LunaPipeline:
         scratch_dir = self._config.scratch_dir
 
         t_dino_start = time.perf_counter()
-        query_vecs = self._encode_queries(query_dir)
+        
+        # Check if query_dir is a pits directory for Multi-Family Resonant Voting
+        query_path = Path(query_dir)
+        use_resonant_voting = False
+        
+        if query_path.is_dir():
+            pit_files = list(query_path.glob("*.npy"))
+            if len(pit_files) > 10:
+                use_resonant_voting = True
+                log.info("Detected pit database with %d entries. Activating Multi-Family Resonant Voting.", len(pit_files))
+        
+        if use_resonant_voting and self._query_queries is None:
+            self._query_queries, self._query_families, self._query_thresholds = self._load_and_encode_pit_queries(query_dir)
+            query_vecs = self._query_queries
+        else:
+            if self._query_queries is not None and use_resonant_voting:
+                query_vecs = self._query_queries
+            else:
+                query_vecs = self._encode_queries(query_dir)
+        
         if trace is not None:
             trace["p1_pytorch_dino_inference"] = time.perf_counter() - t_dino_start
 
@@ -568,17 +719,25 @@ class LunaPipeline:
                         trace[f"index_size_bytes_{pid}"] = Path(bin_path).stat().st_size
 
             # 2. Vector Search & NMS
-            vote_map, best_dist = self._search(
-                index_prefix, metadata, query_vecs, k=search_k, trace=trace
-            )
-            ranked = sorted(
-                vote_map.keys(),
-                key=lambda i: best_dist[i],
-            )
-            nms_hits = self._nms(
-                ranked, vote_map, best_dist, metadata,
-                top_k=top_k, min_dist_px=min_dist_px, trace=trace
-            )
+            if use_resonant_voting and self._query_families is not None:
+                candidate_indices, voting_mask = self._search(
+                    index_prefix, metadata, query_vecs,
+                    families=self._query_families,
+                    thresholds=self._query_thresholds,
+                    k=search_k, trace=trace
+                )
+                nms_hits = self._nms(
+                    candidate_indices, voting_mask, metadata,
+                    top_k=top_k, min_dist_px=min_dist_px, trace=trace
+                )
+            else:
+                candidate_indices, voting_mask = self._search(
+                    index_prefix, metadata, query_vecs, k=search_k, trace=trace
+                )
+                nms_hits = self._nms(
+                    candidate_indices, voting_mask, metadata,
+                    top_k=top_k, min_dist_px=min_dist_px, trace=trace
+                )
 
             # 3. Resolve coordinates
             coord_fn = None
