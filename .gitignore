@@ -45,3 +45,4 @@ temp/
 
 # Logs
 *.log
+*test_output*
