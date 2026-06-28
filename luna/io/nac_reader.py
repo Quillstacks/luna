@@ -95,7 +95,12 @@ def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
         timeout=30,
     )
     response.raise_for_status()
-    return response.json()["features"]
+    data = response.json()
+    if "error" in data:
+        raise ValueError(f"QuickMap API error: {data['error']}. Please try drawing a smaller region of interest.")
+    if "features" not in data:
+        raise KeyError(f"Unexpected response format from QuickMap: {data}")
+    return data["features"]
 
 
 def get_nacs_from_polygon(
@@ -114,18 +119,101 @@ def get_nacs_from_polygon(
     ------
     ValueError
         If fewer than three coordinate pairs are supplied.
-
-    Examples
-    --------
-    >>> corners = [(351.0, -4.0), (352.0, -4.0), (352.0, -5.0), (351.0, -5.0)]
-    >>> features = get_nac_images_from_polygon(corners)
     """
     if len(coords) < 3:
         raise ValueError(f"A polygon requires at least 3 points, got {len(coords)}.")
 
-    ring = list(coords)
+    import logging
+    from shapely.geometry import Polygon, box
+    from shapely.validation import make_valid
+    import numpy as np
+
+    log = logging.getLogger("luna.io.nac_reader")
+
+    # Normalize longitudes to -180 to 180 to prevent wrap-around issues
+    norm_coords = []
+    for lon, lat in coords:
+        norm_lon = (lon + 180) % 360 - 180
+        norm_coords.append((norm_lon, lat))
+
+    roi_poly = Polygon(norm_coords)
+    if not roi_poly.is_valid:
+        roi_poly = make_valid(roi_poly)
+
+    # Calculate bounding box dimensions
+    min_lon, min_lat, max_lon, max_lat = roi_poly.bounds
+    width = max_lon - min_lon
+    height = max_lat - min_lat
+
+    # Subdivide if the region spans more than 2.0 degrees in either dimension
+    GRID_CELL_SIZE = 2.0
+    if width > GRID_CELL_SIZE or height > GRID_CELL_SIZE:
+        log.info(
+            "ROI bounding box is large (%.2f° x %.2f°). Subdividing into %s° sub-grid cells to bypass API limits...",
+            width,
+            height,
+            GRID_CELL_SIZE
+        )
+
+        lon_steps = int(np.ceil(width / GRID_CELL_SIZE))
+        lat_steps = int(np.ceil(height / GRID_CELL_SIZE))
+
+        all_features = []
+        seen_pids = set()
+
+        for i in range(lon_steps):
+            cell_min_lon = min_lon + i * GRID_CELL_SIZE
+            cell_max_lon = min(min_lon + (i + 1) * GRID_CELL_SIZE, max_lon)
+
+            for j in range(lat_steps):
+                cell_min_lat = min_lat + j * GRID_CELL_SIZE
+                cell_max_lat = min(min_lat + (j + 1) * GRID_CELL_SIZE, max_lat)
+
+                cell_poly = box(cell_min_lon, cell_min_lat, cell_max_lon, cell_max_lat)
+                if not cell_poly.intersects(roi_poly):
+                    continue
+
+                intersect_poly = cell_poly.intersection(roi_poly)
+                if intersect_poly.is_empty:
+                    continue
+
+                # Extract coordinates for QuickMap query
+                if intersect_poly.geom_type == 'Polygon':
+                    sub_coords = list(intersect_poly.exterior.coords)
+                else:
+                    sub_coords = [
+                        (cell_min_lon, cell_min_lat),
+                        (cell_max_lon, cell_min_lat),
+                        (cell_max_lon, cell_max_lat),
+                        (cell_min_lon, cell_max_lat)
+                    ]
+
+                spoly = ",".join(f"{lon},{lat}" for lon, lat in sub_coords)
+                try:
+                    features = _query_quickmap(spoly)
+                    for feat in features:
+                        pid = feat.get("properties", {}).get("label")
+                        if pid and pid not in seen_pids:
+                            seen_pids.add(pid)
+                            all_features.append(feat)
+                except Exception as e:
+                    log.warning(
+                        "Sub-grid QuickMap query failed for cell [%.2f, %.2f]: %s",
+                        cell_min_lon,
+                        cell_min_lat,
+                        e
+                    )
+
+        log.info(
+            "Sub-grid query complete. Aggregated %d unique candidate features.",
+            len(all_features)
+        )
+        return all_features
+
+    # Single-cell query path
+    ring = list(norm_coords)
     if ring[0] != ring[-1]:
-        ring.append(ring[0])  # close the ring
+        ring.append(ring[0])
 
     spoly = ",".join(f"{lon},{lat}" for lon, lat in ring)
     return _query_quickmap(spoly)

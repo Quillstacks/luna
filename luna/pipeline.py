@@ -70,6 +70,91 @@ class CandidateHit:
 
 
 # ---------------------------------------------------------------------------
+# Spatial NMS
+# ---------------------------------------------------------------------------
+
+def apply_lunar_spatial_nms(hits: list, distance_threshold_meters: float = 150.0) -> list:
+    """Apply Non-Maximum Suppression using spherical (Haversine) distance on the Moon.
+
+    Supports CandidateHit, RefinedHit, and dictionary inputs. Re-ranks returned hits.
+    For raw candidates, lower Hamming distance (score) is better. For refined hits,
+    higher similarity/score is better.
+    """
+    if not hits:
+        return []
+
+    import dataclasses
+
+    first_hit = hits[0]
+    is_refined = (
+        hasattr(first_hit, "dino_similarity") or 
+        hasattr(first_hit, "essa_score") or 
+        (isinstance(first_hit, dict) and ("dino_similarity" in first_hit or "essa_score" in first_hit))
+    )
+
+    if is_refined:
+        # Refined hits: higher similarity or essa score is better
+        def get_score(h):
+            if hasattr(h, "dino_similarity"):
+                return max(h.dino_similarity, h.essa_score)
+            if isinstance(h, dict):
+                return max(h.get("dino_similarity", 0.0), h.get("essa_score", 0.0))
+            return 0.0
+        reverse = True
+    else:
+        # Candidate hits: lower Hamming distance is better
+        def get_score(h):
+            if hasattr(h, "score"):
+                return h.score
+            if isinstance(h, dict):
+                return h.get("score", 9999.0)
+            return 9999.0
+        reverse = False
+
+    sorted_hits = sorted(hits, key=get_score, reverse=reverse)
+    keep = []
+
+    def get_lat_lon(h):
+        if isinstance(h, dict):
+            return np.radians(h["lat"]), np.radians(h["lon"])
+        return np.radians(h.lat), np.radians(h.lon)
+
+    lats = np.array([get_lat_lon(h)[0] for h in sorted_hits])
+    lons = np.array([get_lat_lon(h)[1] for h in sorted_hits])
+
+    r_moon = 1737400.0
+    num_hits = len(sorted_hits)
+    suppressed = np.zeros(num_hits, dtype=bool)
+
+    for i in range(num_hits):
+        if suppressed[i]:
+            continue
+
+        keep.append(sorted_hits[i])
+
+        lat_i, lon_i = lats[i], lons[i]
+
+        dlat = lats[i+1:] - lat_i
+        dlon = lons[i+1:] - lon_i
+
+        a = np.sin(dlat/2)**2 + np.cos(lat_i) * np.cos(lats[i+1:]) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+        distances = r_moon * c
+
+        overlapping_indices = np.where(distances < distance_threshold_meters)[0]
+        suppressed[i + 1 + overlapping_indices] = True
+
+    # Re-rank hits
+    re_ranked = []
+    for rank, h in enumerate(keep, start=1):
+        if hasattr(h, "rank"):
+            re_ranked.append(dataclasses.replace(h, rank=rank))
+        else:
+            re_ranked.append(h)
+    return re_ranked
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -473,9 +558,8 @@ class LunaPipeline:
                     x_offset=meta.x_offset, y_offset=meta.y_offset,
                 ))
 
-        all_hits.sort(key=lambda h: h.score)
-        for i, h in enumerate(all_hits):
-            object.__setattr__(h, "rank", i + 1)
+        # Apply spatial NMS to remove duplicates across overlapping orbits / image frames
+        all_hits = apply_lunar_spatial_nms(all_hits, distance_threshold_meters=150.0)
 
         total_scan_elapsed = time.perf_counter() - total_scan_start
         
@@ -501,6 +585,55 @@ class LunaPipeline:
             return all_hits, report
         
         return all_hits
+
+
+    def scan_roi(
+        self,
+        roi_coords: list[tuple[float, float]],
+        query_dir: str | Path,
+        max_resolution: float = 1.5,
+        min_incidence: float = 30.0,
+        max_incidence: float = 60.0,
+        top_k: int | None = None,
+        search_k: int | None = None,
+        min_dist_px: float | None = None,
+        force_reingest: bool = False,
+        trace: dict = None,
+        metrics: bool = False,
+        on_progress: Callable[[str, int, int], None] | None = None,
+    ) -> list[CandidateHit] | tuple[list[CandidateHit], MetricsReport]:
+        """Scan a Region of Interest (ROI) defined by lat/lon coordinate vertices.
+
+        Automatically selects a minimal coverage set of lighting-consistent NAC
+        images, runs the Pithos scan, and deduplicates candidate hits spatially on the Moon.
+        """
+        from luna.io.coverage import select_coverage_nacs
+
+        pids = select_coverage_nacs(
+            roi_coords=roi_coords,
+            max_resolution=max_resolution,
+            min_incidence=min_incidence,
+            max_incidence=max_incidence,
+        )
+        if not pids:
+            log.warning("No NAC images selected to cover the given ROI.")
+            if metrics:
+                return [], MetricsReport.from_trace(trace or {})
+            return []
+
+        log.info("ROI coverage solver selected %d images: %s", len(pids), pids)
+
+        return self.scan(
+            product_ids=pids,
+            query_dir=query_dir,
+            top_k=top_k,
+            search_k=search_k,
+            min_dist_px=min_dist_px,
+            force_reingest=force_reingest,
+            trace=trace,
+            metrics=metrics,
+            on_progress=on_progress,
+        )
 
 
     @overload
@@ -603,6 +736,9 @@ class LunaPipeline:
                 skip_preprocess=skip_preprocess,
                 trace=trace,
             )
+
+        # Apply spatial NMS to remove duplicate confirmed detections in overlap areas
+        refined = apply_lunar_spatial_nms(refined, distance_threshold_meters=150.0)
         
         if on_progress:
             if self._refiner_type == "dino":

@@ -209,8 +209,12 @@ class DINORefiner:
                 img_block = label["IMAGE"]
                 lines = int(img_block["LINES"])
                 samples = int(img_block["LINE_SAMPLES"])
+                sample_bits = int(img_block["SAMPLE_BITS"])
+                sample_type = str(img_block["SAMPLE_TYPE"])
             
-            img = np.memmap(nac_path, dtype=np.int16, mode='r', offset=header_bytes, shape=(lines, samples))
+            from luna.io.nac_reader import _numpy_dtype
+            dtype = _numpy_dtype(sample_bits, sample_type)
+            img = np.memmap(nac_path, dtype=dtype, mode='r', offset=header_bytes, shape=(lines, samples))
             
             for hit in pid_hits:
                 x0 = hit.x_offset
@@ -313,8 +317,12 @@ class DINORefiner:
                     img_block = label["IMAGE"]
                     lines = int(img_block["LINES"])
                     samples = int(img_block["LINE_SAMPLES"])
+                    sample_bits = int(img_block["SAMPLE_BITS"])
+                    sample_type = str(img_block["SAMPLE_TYPE"])
                 
-                img = np.memmap(nac_path, dtype=np.int16, mode='r', offset=header_bytes, shape=(lines, samples))
+                from luna.io.nac_reader import _numpy_dtype
+                dtype = _numpy_dtype(sample_bits, sample_type)
+                img = np.memmap(nac_path, dtype=dtype, mode='r', offset=header_bytes, shape=(lines, samples))
                 
                 for hit in pid_hits:
                     x0 = hit.x_offset

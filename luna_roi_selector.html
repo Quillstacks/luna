@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LUNA: ROI Coordinator & Visual Selector</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&family=Space+Grotesk:wght@400;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Leaflet & Leaflet Draw CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+
+    <style>
+        :root {
+            --bg-primary: #0a0c10;
+            --bg-glass: rgba(15, 20, 30, 0.75);
+            --border-glass: rgba(0, 240, 255, 0.15);
+            --accent-cyan: #00f0ff;
+            --accent-pink: #ff007f;
+            --text-main: #f0f2f5;
+            --text-muted: #8a99ad;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-main);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+        }
+
+        #map {
+            flex: 1;
+            height: 100%;
+            z-index: 1;
+            background-color: #050608;
+        }
+
+        /* Sidebar Glass Panel */
+        .sidebar {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 380px;
+            max-height: calc(100vh - 40px);
+            background: var(--bg-glass);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: 16px;
+            z-index: 10;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            overflow-y: auto;
+        }
+
+        .header h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 700;
+            font-size: 24px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-pink));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 6px;
+            letter-spacing: 1px;
+        }
+
+        .header p {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .section-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--accent-cyan);
+            margin-bottom: 10px;
+        }
+
+        .shortcut-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .shortcut-btn {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 10px;
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            transition: all 0.25s ease;
+        }
+
+        .shortcut-btn:hover {
+            background: rgba(0, 240, 255, 0.08);
+            border-color: var(--accent-cyan);
+            transform: translateY(-2px);
+        }
+
+        .shortcut-btn span {
+            display: block;
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .output-box {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 14px;
+            font-family: 'Space Grotesk', monospace;
+            font-size: 12px;
+            color: #5af78e;
+            white-space: pre-wrap;
+            word-break: break-all;
+            min-height: 60px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-cyan), #00aaff);
+            border: none;
+            border-radius: 8px;
+            color: #050608;
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            padding: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .coordinate-inputs {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-group {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .input-group label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+
+        .input-group input {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            padding: 8px;
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            font-size: 13px;
+        }
+
+        .input-group input:focus {
+            border-color: var(--accent-cyan);
+            outline: none;
+        }
+
+        /* Leaflet custom styling */
+        .leaflet-bar a {
+            background-color: var(--bg-glass) !important;
+            color: var(--text-main) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+        }
+
+        .leaflet-bar a:hover {
+            background-color: rgba(0, 240, 255, 0.2) !important;
+            color: var(--accent-cyan) !important;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="map"></div>
+
+    <div class="sidebar">
+        <div class="header">
+            <h1>LUNA: ROI SELECTOR</h1>
+            <p>Define Region of Interest visually on the Moon map.</p>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08);">
+
+        <div>
+            <h2 class="section-title">Jump to Pit Locations</h2>
+            <div class="shortcut-grid">
+                <button class="shortcut-btn" onclick="jumpTo(33.6638, 0.7225, 11)">
+                    Aristillus Pit
+                    <span>33.66° N, 0.72° E</span>
+                </button>
+                <button class="shortcut-btn" onclick="jumpTo(8.33, 33.22, 11)">
+                    Tranquillitatis
+                    <span>8.33° N, 33.22° E</span>
+                </button>
+                <button class="shortcut-btn" onclick="jumpTo(12.50, -56.80, 11)">
+                    Marius Hills
+                    <span>12.50° N, 56.80° W</span>
+                </button>
+                <button class="shortcut-btn" onclick="jumpTo(-35.95, 166.06, 11)">
+                    Mare Ingenii
+                    <span>35.95° S, 166.06° E</span>
+                </button>
+            </div>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08);">
+
+        <div>
+            <h2 class="section-title">Jump to Coordinates</h2>
+            <div class="coordinate-inputs">
+                <div class="input-group">
+                    <label>Latitude</label>
+                    <input type="number" id="jump-lat" placeholder="e.g. 33.66" step="any">
+                </div>
+                <div class="input-group">
+                    <label>Longitude</label>
+                    <input type="number" id="jump-lon" placeholder="e.g. 0.72" step="any">
+                </div>
+                <button class="shortcut-btn" style="flex: 0; align-self: flex-end; padding: 10px;"
+                    onclick="customJump()">Go</button>
+            </div>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08);">
+
+        <div>
+            <h2 class="section-title">Visual Drawing Tools</h2>
+            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+                Click "Start Drawing" and click on the map to place polygon vertices. Click "Finish & Close" to complete
+                the polygon loop.
+            </p>
+            <div class="coordinate-inputs" style="margin-bottom: 10px;">
+                <button id="draw-btn" class="shortcut-btn"
+                    style="flex: 1; text-align: center; border-color: var(--accent-cyan);" onclick="toggleDrawing()">
+                    Start Drawing
+                </button>
+                <button class="shortcut-btn" style="flex: 1; text-align: center;" onclick="finishDrawing()">
+                    Finish & Close
+                </button>
+            </div>
+            <button class="shortcut-btn"
+                style="width: 100%; text-align: center; background: rgba(255,0,127,0.05); border-color: rgba(255,0,127,0.2); color: #ff80c0;"
+                onclick="resetDrawing()">
+                Clear Selection
+            </button>
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.08);">
+
+        <div>
+            <h2 class="section-title">Command Line Generator</h2>
+            <div class="output-box" id="roi-output">No polygon drawn yet.</div>
+        </div>
+
+        <button class="btn-primary" onclick="copyCommand()">
+            <svg style="width:18px;height:18px" viewBox="0 0 24 24">
+                <path fill="currentColor"
+                    d="M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z" />
+            </svg>
+            Copy --roi Parameter
+        </button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Setup Leaflet map (standard Web Mercator CRS to match public XYZ tile servers)
+        var map = L.map('map', {
+            center: [33.6638, 0.7225],
+            zoom: 5,
+            minZoom: 1,
+            maxZoom: 9
+        });
+
+        // OpenPlanetary Moon Basemap (Fastly CDN - supports local file:// origins!)
+        var opmLayer = L.tileLayer('https://cartocdn-gusc.global.ssl.fastly.net/opmbuilder/api/v1/map/named/opm-moon-basemap-v0-1/all/{z}/{x}/{y}.png', {
+            attribution: 'Map data &copy; <a href="https://www.openplanetary.org/">OpenPlanetary</a>',
+            maxZoom: 9,
+            noWrap: false
+        }).addTo(map);
+
+        // Fallback: USGS Planetary WMS Moon layer
+        var wmsLayer = L.tileLayer.wms('https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/earth/moon.map', {
+            layers: 'moon',
+            format: 'image/png',
+            transparent: false,
+            attribution: 'USGS Astrogeology Shaded Relief'
+        });
+
+        // Add OpenPlanetary layer by default
+        opmLayer.addTo(map);
+
+        // Layer selection control
+        var baseMaps = {
+            "OpenPlanetary Moon": opmLayer,
+            "USGS Lunar Relief (WMS)": wmsLayer
+        };
+        L.control.layers(baseMaps, null, { position: 'topleft' }).addTo(map);
+
+        var points = [];
+        var activePolygon = null;
+        var tempLine = null;
+        var markers = [];
+        var drawingMode = false;
+        var currentCoordsStr = "";
+
+        // Toggle drawing mode
+        function toggleDrawing() {
+            drawingMode = !drawingMode;
+            var btn = document.getElementById('draw-btn');
+            if (drawingMode) {
+                btn.innerHTML = 'Cancel';
+                btn.style.background = 'linear-gradient(135deg, var(--accent-pink), #ff0055)';
+                btn.style.borderColor = 'var(--accent-pink)';
+                clearDrawing();
+                map.getContainer().style.cursor = 'crosshair';
+            } else {
+                btn.innerHTML = 'Start Drawing';
+                btn.style.background = '';
+                btn.style.borderColor = 'var(--accent-cyan)';
+                map.getContainer().style.cursor = '';
+                if (tempLine) {
+                    map.removeLayer(tempLine);
+                    tempLine = null;
+                }
+            }
+        }
+
+        // Handle map clicks
+        map.on('click', function (e) {
+            if (!drawingMode) return;
+
+            var latlng = e.latlng;
+            points.push(latlng);
+
+            // Add marker
+            var marker = L.circleMarker(latlng, {
+                color: '#ff007f',
+                fillColor: '#ff007f',
+                fillOpacity: 1.0,
+                radius: 5
+            }).addTo(map);
+            markers.push(marker);
+
+            // Redraw polygon
+            if (activePolygon) {
+                map.removeLayer(activePolygon);
+            }
+            if (points.length > 1) {
+                activePolygon = L.polygon(points, {
+                    color: '#00f0ff',
+                    fillColor: '#00f0ff',
+                    fillOpacity: 0.15
+                }).addTo(map);
+            }
+
+            updateCoordinates();
+        });
+
+        // Mousemove to show potential next line segment
+        map.on('mousemove', function (e) {
+            if (!drawingMode || points.length === 0) return;
+
+            if (tempLine) {
+                map.removeLayer(tempLine);
+            }
+            tempLine = L.polyline([points[points.length - 1], e.latlng], {
+                color: '#ff007f',
+                dashArray: '5, 5',
+                weight: 2
+            }).addTo(map);
+        });
+
+        function finishDrawing() {
+            if (points.length < 3) {
+                alert("Please click at least 3 points on the map before finishing.");
+                return;
+            }
+            if (tempLine) {
+                map.removeLayer(tempLine);
+                tempLine = null;
+            }
+            drawingMode = false;
+            var btn = document.getElementById('draw-btn');
+            btn.innerHTML = 'Start Drawing';
+            btn.style.background = '';
+            btn.style.borderColor = 'var(--accent-cyan)';
+            map.getContainer().style.cursor = '';
+
+            // Add first point to close loop
+            updateCoordinates(true);
+        }
+
+        function clearDrawing() {
+            points = [];
+            markers.forEach(function (m) {
+                map.removeLayer(m);
+            });
+            markers = [];
+            if (activePolygon) {
+                map.removeLayer(activePolygon);
+                activePolygon = null;
+            }
+            if (tempLine) {
+                map.removeLayer(tempLine);
+                tempLine = null;
+            }
+            document.getElementById('roi-output').innerText = "No polygon drawn yet.";
+            currentCoordsStr = "";
+        }
+
+        function resetDrawing() {
+            clearDrawing();
+            drawingMode = false;
+            var btn = document.getElementById('draw-btn');
+            btn.innerHTML = 'Start Drawing';
+            btn.style.background = '';
+            btn.style.borderColor = 'var(--accent-cyan)';
+            map.getContainer().style.cursor = '';
+        }
+
+        function updateCoordinates(closeLoop = false) {
+            if (points.length === 0) return;
+
+            var coordPairs = [];
+            points.forEach(function (latlng) {
+                var lon = latlng.lng;
+                while (lon > 180) lon -= 360;
+                while (lon < -180) lon += 360;
+                coordPairs.push(lon.toFixed(5) + "," + latlng.lat.toFixed(5));
+            });
+
+            if (closeLoop && points.length > 0) {
+                var first = points[0];
+                var lon = first.lng;
+                while (lon > 180) lon -= 360;
+                while (lon < -180) lon += 360;
+                coordPairs.push(lon.toFixed(5) + "," + first.lat.toFixed(5));
+            }
+
+            currentCoordsStr = coordPairs.join(" ");
+            document.getElementById('roi-output').innerText = currentCoordsStr;
+        }
+
+        // Navigation shortcuts & markers
+        var jumpMarker = null;
+
+        function jumpTo(lat, lon, zoom) {
+            map.setView([lat, lon], zoom);
+
+            // Update input fields
+            document.getElementById('jump-lat').value = lat;
+            document.getElementById('jump-lon').value = lon;
+
+            // Highlight jump target with vector circle marker (CORS immune)
+            if (jumpMarker) {
+                map.removeLayer(jumpMarker);
+            }
+            jumpMarker = L.circleMarker([lat, lon], {
+                color: '#00f0ff',
+                fillColor: '#00f0ff',
+                fillOpacity: 0.4,
+                radius: 12,
+                weight: 3
+            }).addTo(map);
+        }
+
+        function customJump() {
+            var lat = parseFloat(document.getElementById('jump-lat').value);
+            var lon = parseFloat(document.getElementById('jump-lon').value);
+            if (!isNaN(lat) && !isNaN(lon)) {
+                jumpTo(lat, lon, 8);
+            }
+        }
+
+        // Clipboard utilities
+        function copyCommand() {
+            if (!currentCoordsStr) {
+                alert("Please draw a Region of Interest (polygon) first!");
+                return;
+            }
+
+            var textToCopy = `"${currentCoordsStr}"`;
+            navigator.clipboard.writeText(textToCopy).then(function () {
+                var btn = document.querySelector('.btn-primary');
+                var originalText = btn.innerHTML;
+                btn.innerHTML = 'Copied Parameter!';
+                btn.style.background = 'linear-gradient(135deg, #5af78e, #2ecc71)';
+
+                setTimeout(function () {
+                    btn.innerHTML = originalText;
+                    btn.style.background = 'linear-gradient(135deg, var(--accent-cyan), #00aaff)';
+                }, 2000);
+            }, function (err) {
+                alert('Could not copy text: ', err);
+            });
+        }
+    </script>
+</body>
+
+</html>

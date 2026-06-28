@@ -9,6 +9,7 @@ from .spice_project import (
     image_to_ground,
     lonlat_to_pixel_spice,
 )
+from .coverage import select_coverage_nacs
 
 __all__ = [
     "NACImage",
@@ -25,4 +26,5 @@ __all__ = [
     "lonlat_to_pixel_spice",
     "ensure_kernels_for_label",
     "ensure_kernels_for_date",
+    "select_coverage_nacs",
 ]

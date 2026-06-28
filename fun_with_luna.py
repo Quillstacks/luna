@@ -18,7 +18,7 @@ from rich.text import Text
 from luna import LunaPipeline
 from luna.config import MAX_BATCH_SIZE, TILE_SIZE, STRIDE
 
-console = Console()
+console = Console(width=120)
 
 
 def setup_logging() -> None:
@@ -36,6 +36,10 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="H.O.L.E. Lunar Pit Detection Pipeline")
     parser.add_argument("--nac", type=str, default="M1118880788RC", 
                         help="LROC NAC Product ID to scan")
+    parser.add_argument("--roi", type=str, default=None,
+                        help="Region of Interest coordinates (format: 'lon1,lat1 lon2,lat2 ...')")
+    parser.add_argument("-y", "--yes", action="store_true", default=False,
+                        help="Skip coverage confirmation prompt and proceed immediately")
     parser.add_argument("--score", type=float, default=0.10, 
                         help="ESSA minimum confidence score threshold")
     parser.add_argument("--query-dir", type=str, default="data/_scratch/pits/", 
@@ -64,6 +68,8 @@ def parse_arguments() -> argparse.Namespace:
     # Output options
     parser.add_argument("--attention-overlay", action="store_true",
                         help="Generate and save attention map overlays for refined candidates")
+    parser.add_argument("--cleanup", action="store_true", default=False,
+                        help="Delete downloaded raw .IMG files from scratch directory after refinement")
     
     return parser.parse_args()
 
@@ -219,9 +225,56 @@ def main() -> None:
     preprocess_text = "Skip (Reuse GeoTIFF Cache)" if args.skip_preprocess else "Full (ISIS Pipeline)"
     info_table.add_row("Preprocessing Mode", preprocess_text)
     info_table.add_row("Refiner", f"{refiner_name} Refiner")
+    if args.roi:
+        info_table.add_row("Target ROI", args.roi)
+    else:
+        info_table.add_row("Target NAC Product", args.nac)
     
     console.print(info_table)
     console.print("\n")
+
+    # Plan coverage and verify target_pids
+    target_pids = [args.nac]
+    if args.roi:
+        try:
+            vertices = []
+            for pair in args.roi.strip().split():
+                parts = pair.split(",")
+                vertices.append((float(parts[0]), float(parts[1])))
+            if len(vertices) < 3:
+                raise ValueError("An ROI requires at least 3 vertices.")
+            if vertices[0] != vertices[-1]:
+                vertices.append(vertices[0])  # Close the polygon
+        except Exception as e:
+            console.print(f"[bold red]Error parsing --roi: {e}[/]")
+            return
+
+        from luna.io.coverage import select_coverage_nacs
+        console.print("[bold yellow]>>> Calculating optimal ROI coverage mosaic (along-track consistent)...[/]")
+        pids = select_coverage_nacs(roi_coords=vertices)
+        
+        if not pids:
+            console.print("[bold red]No NAC images found covering the specified ROI.[/]")
+            return
+
+        # Display coverage plan summary
+        plan_table = Table(title="Coverage Plan Summary", border_style="cyan", width=80)
+        plan_table.add_column("Property", style="bold cyan")
+        plan_table.add_column("Value", style="green")
+        
+        plan_table.add_row("Total Selected Images", str(len(pids)))
+        plan_table.add_row("Estimated Download Size", f"{len(pids) * 529:.1f} MB (compressed)")
+        plan_table.add_row("Product IDs", ", ".join(pids))
+        
+        console.print(plan_table)
+        console.print("\n")
+
+        if not args.yes:
+            ans = input("Do you want to proceed with downloading and scanning these images? [y/N]: ").strip().lower()
+            if ans not in ("y", "yes"):
+                console.print("[bold red]Scan aborted by user.[/]")
+                return
+        target_pids = pids
 
     # Load Model Weights
     console.print("[bold yellow]>>> Initializing Model Weights & LoRA Adapters...[/]")
@@ -242,7 +295,7 @@ def main() -> None:
     
     if args.metrics:
         hits, scan_metrics = pipeline.scan(
-            args.nac,
+            target_pids,
             query_dir=args.query_dir,
             top_k=150,
             search_k=args.search_k,
@@ -252,7 +305,7 @@ def main() -> None:
         )
     else:
         hits = pipeline.scan(
-            args.nac,
+            target_pids,
             query_dir=args.query_dir,
             top_k=150,
             search_k=args.search_k,
@@ -295,6 +348,22 @@ def main() -> None:
 
     # Output report
     print_report(refined, duration_scan, duration_refine, trace_data, args.refiner)
+
+    # Cleanup temporary LROC raw files if requested (keeping those containing top 10 detections)
+    if args.cleanup:
+        console.print("\n[bold yellow]>>> Cleaning up temporary LROC NAC .IMG files (sparing top 10 source images)...[/]")
+        keep_pids = {h.product_id for h in refined[:10]}
+        for pid in target_pids:
+            if pid in keep_pids:
+                console.print(f"  [green]Keeping (contains top 10 hit):[/] {pid}.IMG")
+                continue
+            img_path = config.scratch_dir / f"{pid}.IMG"
+            if img_path.exists():
+                try:
+                    img_path.unlink()
+                    console.print(f"  Removed: {img_path.name}")
+                except Exception as e:
+                    console.print(f"  [red]Failed to remove {img_path.name}: {e}[/]")
 
 
 if __name__ == "__main__":

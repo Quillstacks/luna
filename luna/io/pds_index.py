@@ -118,21 +118,24 @@ class PDSIndex:
         session: Optional[requests.Session] = None,
         archive: str = "CDR",
     ) -> None:
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Luna-PDS-Tool/1.0 (Academic/Research)"
-        })
+        if session is not None:
+            self.session = session
+        else:
+            self.session = requests.Session()
+            self.session.headers.update({
+                "User-Agent": "Luna-PDS-Tool/1.0 (DHBW-Research; Academic)"
+            })
+            retries = Retry(
+                total=5, 
+                backoff_factor=1, 
+                status_forcelist=[500, 502, 503, 504],
+                allowed_methods=["GET", "HEAD"],
+                raise_on_status=False
+            )
+            adapter = HTTPAdapter(max_retries=retries)
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
 
-        retries = Retry(
-            total=5, 
-            backoff_factor=1, 
-            status_forcelist=[500, 502, 503, 504],
-            allowed_methods=["GET", "HEAD"],
-            raise_on_status=False
-        )
-        adapter = HTTPAdapter(max_retries=retries)
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
         self.archive = archive.upper()
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")
         
@@ -140,12 +143,11 @@ class PDSIndex:
             self.base_url = EDR_BASE if self.archive == "EDR" else DEFAULT_BASE
         else:
             self.base_url = base_url.rstrip("/")
-
+ 
         if cache_path is None:
             cache_path = CACHE_PATH.with_name(f"pds_volume_index_{self.archive.lower()}.json")
         
         self.cache_path = Path(cache_path)
-        self.session = session or requests.Session()
         self._volumes: Optional[list[VolumeInfo]] = None
 
     def _list_volumes(self) -> list[str]:
