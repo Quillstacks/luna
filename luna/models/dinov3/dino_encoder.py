@@ -104,6 +104,8 @@ class DINOEncoder:
                 state_dict = torch.load(resolved_base_path, map_location="cpu", weights_only=True)
             if "model" in state_dict:
                 state_dict = state_dict["model"]
+            # Convert FP16 weights to FP32 to avoid dtype mismatch on MPS
+            state_dict = {k: v.float() if v.dtype == torch.float16 else v for k, v in state_dict.items()}
             self.backbone.load_state_dict(state_dict, strict=True)
         else:
             log.warning(
@@ -113,9 +115,11 @@ class DINOEncoder:
         self.model = self._attach_lora(lora_dir)
         self.model.to(self.device)
         self.model.eval()
-        if self.device.type in ["mps", "cuda"]:
+        if self.device.type == "cuda":
             log.info(f"Switching DINOv3 to FP16 precision on {self.device.type}...")
             self.model = self.model.half()
+        elif self.device.type == "mps":
+            log.info(f"Keeping DINOv3 in FP32 precision on MPS (FP16 causes dtype mismatch with Stage-2 decoder)")
 
         # Keep a direct reference to the raw backbone for inference.
         # Newer peft versions route model(x) through a text-model forward that
@@ -169,7 +173,7 @@ class DINOEncoder:
             If return_attention is True: tuple of (embeddings, attention_map) where attention_map
                 is shape (B, num_patches+1, num_patches+1) resized to (B, H, W)
         """
-        if self.device.type in ["mps", "cuda"]:
+        if self.device.type == "cuda":
             tensor_dtype = torch.float16
         else:
             tensor_dtype = torch.float32

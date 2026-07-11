@@ -220,15 +220,8 @@ def image_to_ground(
     y_focal = (sample - p["boresight_sample"]) / p["px_per_mm"]
     look_cam = np.array([0.0, y_focal, p["focal_mm"]])
     
-    rot_cam_to_j2k = sp.pxform(p["frame"], "J2000", et)
-    rot_j2k_to_bf = sp.pxform("J2000", "IAU_MOON", et)
-    look_bf = rot_j2k_to_bf @ rot_cam_to_j2k @ look_cam
-    
-    radii = sp.bodvrd("MOON", "RADII", 3)[1]
-    sc_pos, _ = sp.spkpos("LRO", et, "IAU_MOON", "NONE", "MOON")
-    
     try:
-        point, _, _ = sp.sincpt("Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", look_bf, radii)
+        point, _, _ = sp.sincpt("Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", p["frame"], look_cam)
         re_km, rp_km = float(radii[0]), float(radii[2])
         f_body = (re_km - rp_km) / re_km
         lon_rad, lat_rad, _ = sp.recgeo(point, re_km, f_body)

@@ -45,3 +45,16 @@ temp/
 
 # Logs
 *.log
+
+# Temp outputs
+test_output_stage2/
+plots/
+data/_scratch/
+*.png
+*.jpg
+*.jpeg
+*.svg
+!docs/assets/architecture.svg
+!docs/examples/
+!third_party/**/*.jpg
+!third_party/**/*.png

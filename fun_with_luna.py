@@ -6,6 +6,7 @@ os.environ["MKL_NUM_THREADS"] = "1"
 import argparse
 import logging
 import time
+from pathlib import Path
 from typing import List, Any
 
 import torch
@@ -56,8 +57,10 @@ def parse_arguments() -> argparse.Namespace:
                         help="Print MetricsReport after the run")
     parser.add_argument("--search-k", type=int, default=200,
                         help="Number of nearest neighbors per query in KNN search")
-    parser.add_argument("--refiner", type=str, default="essa", choices=["essa", "dino"],
+    parser.add_argument("--refiner", type=str, default="essa", choices=["essa", "dino", "locate_anything", "stage2"],
                         help="Second-stage refiner: 'essa' (Mask R-CNN, accurate) or 'dino' (lightweight)")
+    parser.add_argument("--mode", type=str, default="all", choices=["all", "ingest", "classify"],
+                        help="Execution mode: 'all' (default), 'ingest' (download and build Pithos database indices only), 'classify' (run vector search and refiners on existing indices)")
     
     # Pithos / Index options
     parser.add_argument("--pithos-use-fp16", action="store_true", default=False,
@@ -77,6 +80,8 @@ def parse_arguments() -> argparse.Namespace:
                         help="Generate and save attention map overlays for refined candidates")
     parser.add_argument("--cleanup", action="store_true", default=False,
                         help="Delete downloaded raw .IMG files from scratch directory after refinement")
+    parser.add_argument("--train-svm", action="store_true", default=False,
+                        help="Train the Stage-2 SVM secondary classifier using the catalog and exit")
     
     return parser.parse_args()
 
@@ -185,7 +190,14 @@ def print_report(refined_hits: List[Any], duration_scan: float, duration_refine:
         
     # Performance Summary Panel
     console.print("\n")
-    refiner_name = "ESSA" if refiner_type == "essa" else "DINO"
+    if refiner_type == "essa":
+        refiner_name = "ESSA"
+    elif refiner_type == "stage2":
+        refiner_name = "Stage-2"
+    elif refiner_type == "locate_anything":
+        refiner_name = "LocateAnything"
+    else:
+        refiner_name = "DINO"
     if trace_data:
         perf_table = Table(title="Pipeline Performance Summary", show_header=True, border_style="dim", width=80)
         perf_table.add_column("Pipeline Stage / Operational Step", style="bold cyan")
@@ -231,7 +243,14 @@ def main() -> None:
 
     # Print Configuration Dashboard
     sys_info = get_system_info()
-    refiner_name = "ESSA" if args.refiner == "essa" else "DINO"
+    if args.refiner == "essa":
+        refiner_name = "ESSA"
+    elif args.refiner == "stage2":
+        refiner_name = "Stage-2"
+    elif args.refiner == "locate_anything":
+        refiner_name = "LocateAnything"
+    else:
+        refiner_name = "DINO"
     info_table = Table(title="Runtime & Hardware Parameters", show_header=False, border_style="dim", width=80)
     info_table.add_column("Parameter", style="bold cyan")
     info_table.add_column("Value", style="green")
@@ -242,7 +261,7 @@ def main() -> None:
     info_table.add_row("Resolved Batch Size", f"{MAX_BATCH_SIZE} tiles")
     info_table.add_row("Slicing Dimensions", f"{TILE_SIZE}x{TILE_SIZE} px (Stride: {STRIDE} px)")
     info_table.add_row("Bandwidth Limit", f"{args.max_bandwidth} MB/s" if args.max_bandwidth else "Unlimited")
-    info_table.add_row("Target NAC Product", args.nac)
+    info_table.add_row("Execution Mode", args.mode.upper())
     preprocess_text = "Skip (Reuse GeoTIFF Cache)" if args.skip_preprocess else "Full (ISIS Pipeline)"
     info_table.add_row("Preprocessing Mode", preprocess_text)
     info_table.add_row("Refiner", f"{refiner_name} Refiner")
@@ -307,85 +326,145 @@ def main() -> None:
         max_bandwidth_mbps=args.max_bandwidth,
     )
     pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora", refiner=args.refiner, config=config)
-
-    # Dictionary to collect granular timing metrics
     trace_data = {} if args.trace else None
 
-    # Phase 1: DINOv3 Vector Scan
-    console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Scan & Pithos Index Matching...[/]")
-    start_scan = time.perf_counter()
-    
-    if args.metrics:
-        hits, scan_metrics = pipeline.scan(
-            target_pids,
-            query_dir=args.query_dir,
-            top_k=150,
-            search_k=args.search_k,
-            force_reingest=args.force_reingest,
-            trace=trace_data,
-            metrics=True
-        )
-    else:
-        hits = pipeline.scan(
-            target_pids,
-            query_dir=args.query_dir,
-            top_k=150,
-            search_k=args.search_k,
+    # Phase 1: Ingestion
+    if args.mode in ("all", "ingest"):
+        console.print("\n[bold cyan]>>> Phase 1: Running DINOv3 Vector Ingest...[/]")
+        from luna.ingestor import LunaIngestor
+        ingestor = LunaIngestor(encoder=pipeline._encoder, device=pipeline._device, config=pipeline._config)
+        ingested_pids = ingestor.ingest(
+            product_ids=target_pids,
             force_reingest=args.force_reingest,
             trace=trace_data
         )
-    
-    duration_scan = time.perf_counter() - start_scan
+        if args.mode == "ingest":
+            console.print(f"[bold green]Ingestion complete! Successfully built index files for: {', '.join(ingested_pids)}[/]")
+            return
 
-    # Phase 2: Refinement
-    console.print(f"\n[bold magenta]>>> Phase 2: Running {refiner_name} Refinement Stage...[/]")
-    start_refine = time.perf_counter()
-    
-    if args.metrics:
-        refined, metrics = pipeline.refine(
-            hits,
-            score_thr=args.score,
-            essa_min_score=args.score, 
-            output_dir=args.out_dir,
-            skip_preprocess=args.skip_preprocess,
-            trace=trace_data,
-            metrics=True
-        )
-    else:
-        refined = pipeline.refine(
-            hits,
-            score_thr=args.score,
-            essa_min_score=args.score, 
-            output_dir=args.out_dir,
-            skip_preprocess=args.skip_preprocess,
-            trace=trace_data
-        )
-    
-    duration_refine = time.perf_counter() - start_refine
+    # Phase 2: Classify (Search & Refinement)
+    if args.mode in ("all", "classify"):
+        # For classify-only, check that index files exist
+        if args.mode == "classify":
+            console.print("\n[bold magenta]>>> Phase 2: Running Classify Mode (Querying & Refinement)...[/]")
+            for pid in target_pids:
+                index_prefix = pipeline._config.index_dir / f"pithos_{pid}"
+                if not Path(f"{index_prefix}.bin").exists():
+                    console.print(f"[bold red]Error: Index database for {pid} does not exist. Run in --mode ingest or --mode all first.[/]")
+                    return
+        else:
+            console.print(f"\n[bold magenta]>>> Phase 2: Running {refiner_name} Refinement Stage...[/]")
 
-    # Print MetricsReport if requested
-    if args.metrics:
-        console.print("\n")
-        console.print(metrics)
+        start_classify = time.perf_counter()
+        
+        from luna.classifier import get_classifier
+        classifier = get_classifier(args.refiner, pipeline._encoder, pipeline._device, pipeline._config)
+        
+        # Check if we should train SVM
+        if args.train_svm:
+            console.print("[bold green]>>> Phase 2: Training Consolidated SVM Secondary Classifier...[/]")
+            # Generate Candidate hits first to feed into train_svm
+            candidates = classifier.generate_candidates(
+                product_ids=target_pids,
+                query_dir=args.query_dir,
+                top_k=150,
+                search_k=args.search_k,
+                trace=trace_data,
+            )
+            from luna.models.stage2_decoder import Stage2Refiner
+            refiner = Stage2Refiner.from_checkpoint(
+                "data/weights/stage2_decoder_best.pt",
+                dino_encoder=pipeline._encoder,
+                device=pipeline._device
+            )
+            res = refiner.train_svm(candidates, catalog_path="catalogs/lpa.csv")
+            console.print(f"[bold green]SVM Training completed! Positives: {res.get('positives', 0)}, Negatives: {res.get('negatives', 0)}[/]")
+            return
 
-    # Output report
-    print_report(refined, duration_scan, duration_refine, trace_data, args.refiner)
+        # Regular classification run
+        if args.metrics:
+            # Note: classifier.classify handles candidate generation + refinement
+            refined = classifier.classify(
+                product_ids=target_pids,
+                query_dir=args.query_dir,
+                top_k=150,
+                search_k=args.search_k,
+                score_thr=args.score,
+                essa_min_score=args.score,
+                output_dir=args.out_dir,
+                skip_preprocess=args.skip_preprocess,
+                trace=trace_data,
+            )
+            # Reconstruct metrics since we ran it directly
+            metrics = MetricsReport.from_trace(trace_data)
+        else:
+            refined = classifier.classify(
+                product_ids=target_pids,
+                query_dir=args.query_dir,
+                top_k=150,
+                search_k=args.search_k,
+                score_thr=args.score,
+                essa_min_score=args.score,
+                output_dir=args.out_dir,
+                skip_preprocess=args.skip_preprocess,
+                trace=trace_data,
+            )
+        
+        duration_classify = time.perf_counter() - start_classify
 
-    # Cleanup temporary LROC raw files if requested (keeping those containing top 10 detections)
-    if args.cleanup:
-        console.print("\n[bold yellow]>>> Cleaning up temporary LROC NAC .IMG files (sparing top 10 source images)...[/]")
-        keep_pids = {h.product_id for h in refined[:10]}
-        for pid in target_pids:
-            if pid in keep_pids:
-                console.print(f"  [green]Keeping (contains top 10 hit):[/] {pid}.IMG")
-                continue
-            img_path = config.scratch_dir / f"{pid}.IMG"
-            if img_path.exists():
-                try:
-                    img_path.unlink()
-                    console.print(f"  Removed: {img_path.name}")
-                except Exception as e:
-                    console.print(f"  [red]Failed to remove {img_path.name}: {e}[/]")
+        # Print MetricsReport if requested
+        if args.metrics:
+            console.print("\n")
+            console.print(metrics)
+
+        # Output report
+        duration_scan = 0.0
+        if trace_data:
+            duration_scan += trace_data.get("p1_pytorch_dino_inference", 0.0)
+            duration_scan += trace_data.get("p1_pithos_index_scan", 0.0)
+            duration_scan += trace_data.get("p1_pithos_resonant_voting", 0.0)
+            duration_scan += trace_data.get("p1_cpu_nms_filtering", 0.0)
+        
+        print_report(refined, duration_scan, duration_classify - duration_scan, trace_data, args.refiner)
+
+        # Save to JSON for downstream comparisons/matching
+        try:
+            import json
+            json_path = Path("data/_scratch/refined_hits.json")
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            serialized = []
+            for h in refined:
+                serialized.append({
+                    "rank": int(h.rank),
+                    "product_id": str(h.product_id),
+                    "lat": float(h.lat),
+                    "lon": float(h.lon),
+                    "x_offset": float(h.x_offset),
+                    "y_offset": float(h.y_offset),
+                    "dino_similarity": float(getattr(h, "dino_similarity", h.essa_score)),
+                    "essa_class": str(getattr(h, "essa_class", "pit"))
+                })
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(serialized, f, indent=2)
+            console.print(f"[bold green]Saved serialized refined hits to {json_path}[/]")
+        except Exception as e:
+            console.print(f"[red]Failed to serialize refined hits to JSON: {e}[/]")
+
+        # Cleanup temporary LROC raw files if requested (keeping those containing top 10 detections)
+        if args.cleanup:
+            console.print("\n[bold yellow]>>> Cleaning up temporary LROC NAC .IMG files (sparing top 10 source images)...[/]")
+            keep_pids = {h.product_id for h in refined[:10]}
+            for pid in target_pids:
+                if pid in keep_pids:
+                    console.print(f"  [green]Keeping (contains top 10 hit):[/] {pid}.IMG")
+                    continue
+                img_path = config.scratch_dir / f"{pid}.IMG"
+                if img_path.exists():
+                    try:
+                        img_path.unlink()
+                        console.print(f"  Removed: {img_path.name}")
+                    except Exception as e:
+                        console.print(f"  [red]Failed to remove {img_path.name}: {e}[/]")
 
 
 if __name__ == "__main__":

@@ -53,6 +53,7 @@ def _label_byte_count(label: pvl.PVLModule) -> int:
 
 
 def _attach_geometry(img: NACImage, geom: dict) -> None:
+    import math
     img.geometry = geom
     img.center_lon = geom.get("center_longitude")
     img.center_lat = geom.get("center_latitude")
@@ -63,6 +64,26 @@ def _attach_geometry(img: NACImage, geom: dict) -> None:
         "lower_left": (geom.get("lower_left_longitude"), geom.get("lower_left_latitude")),
         "lower_right": (geom.get("lower_right_longitude"), geom.get("lower_right_latitude")),
     }
+    
+    # Attach incidence angle and pixel scale (resolution)
+    img.incidence_angle = geom.get("incidence_angle") or 45.0
+    img.pixel_scale = geom.get("resolution") or 0.5
+    
+    # Compute approximate sub-solar azimuth
+    center_lat = geom.get("center_latitude")
+    center_lon = geom.get("center_longitude")
+    sun_lat = geom.get("sub_solar_latitude")
+    sun_lon = geom.get("sub_solar_longitude")
+    
+    if None not in (center_lat, center_lon, sun_lat, sun_lon):
+        lat1, lon1 = math.radians(center_lat), math.radians(center_lon)
+        lat2, lon2 = math.radians(sun_lat), math.radians(sun_lon)
+        dlon = lon2 - lon1
+        y = math.sin(dlon) * math.cos(lat2)
+        x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+        img.sub_solar_azimuth = math.degrees(math.atan2(y, x)) % 360
+    else:
+        img.sub_solar_azimuth = 180.0
 
 def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
     """Send a polygon footprint query to the QuickMap COGNAC16 service.

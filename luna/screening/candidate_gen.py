@@ -111,20 +111,25 @@ class DataIngestor:
     def _build_coord_fn(
         path: Path, img_geometry, lines: int, samples: int
     ) -> Callable[[float, float], tuple[float, float]]:
+        try:
+            from luna.io.spice_project import ensure_kernels_for_label
+            ensure_kernels_for_label(path)
+            coord_fn = DataIngestor._build_spice_coord_fn(path)
+            # Test projection at center
+            test_lon, test_lat = coord_fn(samples / 2.0, lines / 2.0)
+            if test_lon != 0.0 or test_lat != 0.0:
+                log.info("Using precise SPICE projection for %s", path.name)
+                return coord_fn
+        except Exception as e:
+            log.warning("SPICE projection failed (%s), falling back to bilinear ...", e)
+
         from luna.io import pixel_to_lonlat, LinearProjection
         try:
             proj = LinearProjection.from_nac_geometry(img_geometry, lines=lines, samples=samples)
-            log.info("Using bilinear projection for %s", path.name)
+            log.info("Using bilinear projection fallback for %s", path.name)
             return lambda x, y: pixel_to_lonlat(proj, x, y)
         except (ValueError, KeyError, TypeError) as e:
-            log.warning("Bilinear projection failed (%s), falling back to SPICE ...", e)
-
-        from luna.io.spice_project import ensure_kernels_for_label
-        ensure_kernels_for_label(path)
-        coord_fn = DataIngestor._build_spice_coord_fn(path)
-        coord_fn(samples / 2.0, lines / 2.0)
-        log.info("SPICE kernels active for %s", path.name)
-        return coord_fn
+            raise ValueError(f"Bilinear projection failed: {e}")
 
     def _safe_encode(self, batch: np.ndarray) -> np.ndarray:
         """Encode a batch safely, falling back and halving the batch on GPU/MPS OOM errors."""

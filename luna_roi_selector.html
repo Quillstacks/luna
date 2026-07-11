@@ -50,7 +50,6 @@
             background-color: #050608;
         }
 
-        /* Sidebar Glass Panel */
         .sidebar {
             position: absolute;
             top: 20px;
@@ -200,7 +199,6 @@
             outline: none;
         }
 
-        /* Leaflet custom styling */
         .leaflet-bar a {
             background-color: var(--bg-glass) !important;
             color: var(--text-main) !important;
@@ -239,7 +237,7 @@
                 </button>
                 <button class="shortcut-btn" onclick="jumpTo(12.50, -56.80, 11)">
                     Marius Hills
-                    <span>12.50° N, 56.80° W</span>
+                    <span>12.50° N, -56.80° W</span>
                 </button>
                 <button class="shortcut-btn" onclick="jumpTo(-35.95, 166.06, 11)">
                     Mare Ingenii
@@ -283,6 +281,13 @@
                     Finish & Close
                 </button>
             </div>
+
+            <button class="shortcut-btn"
+                style="width: 100%; text-align: center; margin-bottom: 10px; background: rgba(0, 240, 255, 0.05); border-color: var(--accent-cyan);"
+                onclick="selectFullMoon()">
+                Select Full Moon
+            </button>
+
             <button class="shortcut-btn"
                 style="width: 100%; text-align: center; background: rgba(255,0,127,0.05); border-color: rgba(255,0,127,0.2); color: #ff80c0;"
                 onclick="resetDrawing()">
@@ -308,7 +313,6 @@
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        // Setup Leaflet map (standard Web Mercator CRS to match public XYZ tile servers)
         var map = L.map('map', {
             center: [33.6638, 0.7225],
             zoom: 5,
@@ -316,14 +320,12 @@
             maxZoom: 9
         });
 
-        // OpenPlanetary Moon Basemap (Fastly CDN - supports local file:// origins!)
         var opmLayer = L.tileLayer('https://cartocdn-gusc.global.ssl.fastly.net/opmbuilder/api/v1/map/named/opm-moon-basemap-v0-1/all/{z}/{x}/{y}.png', {
             attribution: 'Map data &copy; <a href="https://www.openplanetary.org/">OpenPlanetary</a>',
             maxZoom: 9,
             noWrap: false
         }).addTo(map);
 
-        // Fallback: USGS Planetary WMS Moon layer
         var wmsLayer = L.tileLayer.wms('https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/earth/moon.map', {
             layers: 'moon',
             format: 'image/png',
@@ -331,10 +333,8 @@
             attribution: 'USGS Astrogeology Shaded Relief'
         });
 
-        // Add OpenPlanetary layer by default
         opmLayer.addTo(map);
 
-        // Layer selection control
         var baseMaps = {
             "OpenPlanetary Moon": opmLayer,
             "USGS Lunar Relief (WMS)": wmsLayer
@@ -348,7 +348,6 @@
         var drawingMode = false;
         var currentCoordsStr = "";
 
-        // Toggle drawing mode
         function toggleDrawing() {
             drawingMode = !drawingMode;
             var btn = document.getElementById('draw-btn');
@@ -370,14 +369,12 @@
             }
         }
 
-        // Handle map clicks
         map.on('click', function (e) {
             if (!drawingMode) return;
 
             var latlng = e.latlng;
             points.push(latlng);
 
-            // Add marker
             var marker = L.circleMarker(latlng, {
                 color: '#ff007f',
                 fillColor: '#ff007f',
@@ -386,7 +383,6 @@
             }).addTo(map);
             markers.push(marker);
 
-            // Redraw polygon
             if (activePolygon) {
                 map.removeLayer(activePolygon);
             }
@@ -401,7 +397,6 @@
             updateCoordinates();
         });
 
-        // Mousemove to show potential next line segment
         map.on('mousemove', function (e) {
             if (!drawingMode || points.length === 0) return;
 
@@ -431,7 +426,6 @@
             btn.style.borderColor = 'var(--accent-cyan)';
             map.getContainer().style.cursor = '';
 
-            // Add first point to close loop
             updateCoordinates(true);
         }
 
@@ -486,17 +480,37 @@
             document.getElementById('roi-output').innerText = currentCoordsStr;
         }
 
-        // Navigation shortcuts & markers
+        function selectFullMoon() {
+            resetDrawing();
+
+            // S輕htly offset bounds to avoid antimeridian/pole coordinate collision in GIS engines
+            const bufferedBounds = [
+                [-89.99900, -179.99900],
+                [89.99900, -179.99900],
+                [89.99900, 179.99900],
+                [-89.99900, 179.99900]
+            ];
+
+            activePolygon = L.polygon(bufferedBounds, {
+                color: '#00f0ff',
+                fillColor: '#00f0ff',
+                fillOpacity: 0.15
+            }).addTo(map);
+
+            currentCoordsStr = "-179.99900,89.99900 179.99900,89.99900 179.99900,-89.99900 -179.99900,-89.99900 -179.99900,89.99900";
+            document.getElementById('roi-output').innerText = currentCoordsStr;
+
+            map.setView([0, 0], 2);
+        }
+
         var jumpMarker = null;
 
         function jumpTo(lat, lon, zoom) {
             map.setView([lat, lon], zoom);
 
-            // Update input fields
             document.getElementById('jump-lat').value = lat;
             document.getElementById('jump-lon').value = lon;
 
-            // Highlight jump target with vector circle marker (CORS immune)
             if (jumpMarker) {
                 map.removeLayer(jumpMarker);
             }
@@ -517,7 +531,6 @@
             }
         }
 
-        // Clipboard utilities
         function copyCommand() {
             if (!currentCoordsStr) {
                 alert("Please draw a Region of Interest (polygon) first!");
