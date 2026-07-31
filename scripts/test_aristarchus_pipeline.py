@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Komplettes Testskript für Aristarchus NACs: Stage-1 + Stage-2 mit Analyse.
+"""Complete test script for Aristarchus NACs: Stage-1 + Stage-2 with analysis.
 
-Dieses Skript:
-1. Führt Stage-1 Suche auf M109548636RC und M109548636LC durch
-2. Findet Pit-Kandidaten
-3. Führt Stage-2 auf den besten Kandidaten aus
-4. Analysiert die Ergebnisse im Vergleich zu LPA-Katalog
+This script:
+1. Executes Stage-1 candidate search across M109548636RC and M109548636LC
+2. Surface pit candidate hits
+3. Executes Stage-2 refinement on top candidates
+4. Analyzes results against cataloged LPA reference pits
 """
 
 import os
@@ -16,11 +16,11 @@ import csv
 from pathlib import Path
 from collections import defaultdict
 
-# Projekt-Root hinzufügen
-project_root = Path(__file__).parent
+# Add project root to sys.path
+project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Logging konfigurieren
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -31,16 +31,15 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Umgebungsvariablen für Performance auf Mac
+# Performance tuning environment variables
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 
-# Import nach Logging, um Import-Fehler zu loggen
 import numpy as np
 import torch
 
 def load_lpa_catalog(catalog_path="Catalogs/lpa.csv"):
-    """Lade LPA-Katalog und filtere Aristarchus-Pits."""
+    """Load LPA catalog and filter Aristarchus region pits."""
     catalog_pits = []
     try:
         with open(catalog_path, mode="r", encoding="utf-8") as f:
@@ -58,15 +57,15 @@ def load_lpa_catalog(catalog_path="Catalogs/lpa.csv"):
                         "funnel_max_m": float(row["funnel_max_m"]) if row["funnel_max_m"] else 0.0,
                         "funnel_min_m": float(row["funnel_min_m"]) if row["funnel_min_m"] else 0.0,
                     })
-        log.info(f"Geladen: {len(catalog_pits)} Aristarchus-Pits aus LPA-Katalog")
+        log.info(f"Loaded {len(catalog_pits)} Aristarchus pits from LPA catalog")
         for pit in catalog_pits:
             log.info(f"  - {pit['name']}: lat={pit['lat']:.4f}, lon={pit['lon']:.4f}, depth={pit['depth_m']}m")
     except Exception as e:
-        log.error(f"Fehler beim Laden des LPA-Katalogs: {e}")
+        log.error(f"Error loading LPA catalog: {e}")
     return catalog_pits
 
 def compute_lunar_distance(lat1, lon1, lat2, lon2):
-    """Berechne Distanz auf dem Mond in Metern."""
+    """Compute surface distance on the Moon in meters."""
     LUNAR_METERS_PER_DEGREE = 30323.35
     dlat = np.radians(lat1 - lat2)
     delta_lon = (lon1 % 360) - (lon2 % 360)
@@ -79,82 +78,74 @@ def compute_lunar_distance(lat1, lon1, lat2, lon2):
     return np.sqrt(dx**2 + dy**2)
 
 def run_stage1_search(pipeline, nac_ids, query_path, search_k=200):
-    """Führe Stage-1 Suche auf den NACs durch."""
+    """Run Stage-1 search across specified NAC products."""
     from luna.config import INDEX_DIR, SCRATCH_DIR
     from luna.pipeline import apply_lunar_spatial_nms
     
     lpa_catalog = load_lpa_catalog()
     
-    # Lade Query-Daten
     if not query_path.exists():
-        log.error(f"Query-Datei nicht gefunden: {query_path}")
+        log.error(f"Query vector file not found at {query_path}")
         return [], lpa_catalog
     
-    log.info(f"Geladen: Query-Vektoren aus {query_path}")
+    log.info(f"Loaded query vectors from {query_path}")
     
-    # Führe Suche mit der scan-Methode durch
     log.info(f"\n{'='*60}")
-    log.info(f"Stage-1 Suche auf {nac_ids}...")
+    log.info(f"Running Stage-1 search on {nac_ids}...")
     log.info(f"{'='*60}")
     
     start_time = time.time()
     
     try:
-        # Suche durchführen mit scan-Methode
         hits = pipeline.scan(
             product_ids=nac_ids,
-            query_dir=str(query_path.parent),  # Verwende das Verzeichnis
+            query_dir=str(query_path.parent),
             search_k=search_k,
             top_k=search_k,
             force_reingest=False
         )
         
         search_time = time.time() - start_time
-        log.info(f"  Suche abgeschlossen in {search_time:.1f}s")
-        log.info(f"     Gesamt Kandidaten: {len(hits)}")
+        log.info(f"  Search completed in {search_time:.1f}s")
+        log.info(f"  Total candidate hits: {len(hits)}")
         
-        # Analysiere Kandidaten
         if hits:
             scores = [h.score for h in hits]
-            log.info(f"     Score-Bereich: {min(scores):.2f} - {max(scores):.2f}")
-            log.info(f"     Durchschnittlicher Score: {np.mean(scores):.2f}")
+            log.info(f"  Score range: {min(scores):.2f} - {max(scores):.2f}")
+            log.info(f"  Mean score: {np.mean(scores):.2f}")
         
     except Exception as e:
-        log.error(f"  Fehler bei Suche: {e}")
+        log.error(f"  Search error: {e}")
         import traceback
         traceback.print_exc()
         return [], lpa_catalog
     
     log.info(f"\n{'='*60}")
-    log.info(f"STAGE-1 ERGEBNIS")
+    log.info(f"STAGE-1 RESULTS SUMMARY")
     log.info(f"{'='*60}")
-    log.info(f"Gesamt Kandidaten: {len(hits)}")
+    log.info(f"Total candidate hits: {len(hits)}")
     
     return hits, lpa_catalog
 
 def run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50):
-    """Führe Stage-2 auf den besten Kandidaten durch."""
+    """Run Stage-2 refinement on top candidate hits."""
     from luna.config import SCRATCH_DIR
     
-    # Sortiere nach Score (beste zuerst)
     hits_sorted = sorted(hits, key=lambda h: h.score, reverse=True)
     
-    # Nimm nur die besten Kandidaten
     if len(hits_sorted) > max_candidates:
-        log.info(f"Teste nur Top {max_candidates} von {len(hits_sorted)} Kandidaten")
+        log.info(f"Testing top {max_candidates} of {len(hits_sorted)} candidates")
         hits_to_test = hits_sorted[:max_candidates]
     else:
         hits_to_test = hits_sorted
     
     log.info(f"\n{'='*60}")
-    log.info(f"STAGE-2 TEST (Top {len(hits_to_test)} Kandidaten)")
+    log.info(f"STAGE-2 REFINEMENT TEST (Top {len(hits_to_test)} candidates)")
     log.info(f"{'='*60}")
     
-    # Erstelle Output-Verzeichnis
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     
-    # Führe Stage-2 aus
     start_time = time.time()
     refined_hits = refiner.refine(
         hits_to_test,
@@ -164,14 +155,13 @@ def run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50):
     )
     stage2_time = time.time() - start_time
     
-    log.info(f"\nStage-2 abgeschlossen in {stage2_time:.1f}s")
-    log.info(f"  Bestätigte Pits: {len(refined_hits)}")
-    log.info(f"  Abgelehnt: {len(hits_to_test) - len(refined_hits)}")
+    log.info(f"\nStage-2 refinement completed in {stage2_time:.1f}s")
+    log.info(f"  Confirmed pits: {len(refined_hits)}")
+    log.info(f"  Rejected: {len(hits_to_test) - len(refined_hits)}")
     
-    # Analysiere die Ergebnisse
     if refined_hits and lpa_catalog:
         log.info(f"\n{'='*60}")
-        log.info(f"ANALYSE: Vergleich mit LPA-Katalog")
+        log.info(f"ANALYSIS: Comparison against LPA Reference Catalog")
         log.info(f"{'='*60}")
         
         for refined in refined_hits:
@@ -187,7 +177,6 @@ def run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50):
                     best_dist = dist
                     best_pit = pit
             
-            # Auch Distanz zu Stage-1 Koordinaten
             stage1_dist = compute_lunar_distance(
                 refined.lat, refined.lon,
                 refined.essa_lat, refined.essa_lon
@@ -197,14 +186,14 @@ def run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50):
                 log.info(f"\n  {refined.product_id} Rank {refined.rank}:")
                 log.info(f"     Stage-1: lat={refined.lat:.4f}, lon={refined.lon:.4f}")
                 log.info(f"     Stage-2: lat={refined.essa_lat:.4f}, lon={refined.essa_lon:.4f}")
-                log.info(f"     Stage-1 vs Stage-2 Distanz: {stage1_dist:.1f}m")
-                log.info(f"     Nächster LPA-Pit: {best_pit['name']} (Distanz: {best_dist:.1f}m)")
+                log.info(f"     Stage-1 vs Stage-2 offset: {stage1_dist:.1f}m")
+                log.info(f"     Closest LPA pit: {best_pit['name']} (Distance: {best_dist:.1f}m)")
                 log.info(f"     Score: {refined.dino_score:.3f}, ESSA Score: {refined.essa_score:.3f}")
             else:
                 log.info(f"\n  {refined.product_id} Rank {refined.rank}:")
                 log.info(f"     Stage-1: lat={refined.lat:.4f}, lon={refined.lon:.4f}")
                 log.info(f"     Stage-2: lat={refined.essa_lat:.4f}, lon={refined.essa_lon:.4f}")
-                log.info(f"     Kein LPA-Pit in der Nähe gefunden")
+                log.info(f"     No nearby LPA pit found within range")
                 log.info(f"     Score: {refined.dino_score:.3f}, ESSA Score: {refined.essa_score:.3f}")
     
     return refined_hits
@@ -219,61 +208,53 @@ def main():
     from luna.models.stage2_decoder import Stage2Refiner, build_stage2_decoder
     from luna.models.dinov3 import DINOEncoder
     
-    # Device auswählen
     device = (
         "mps" if torch.backends.mps.is_available() else 
         "cpu"
     )
-    log.info(f"Verwendetes Device: {device}")
+    log.info(f"Target execution device: {device}")
     
-    # NACs die wir testen
     nac_ids = ["M109548636RC", "M109548636LC"]
-    
-    # Query-Datei (Pit-Patches)
     query_path = SCRATCH_DIR / "pits" / "dino_reference.npy"
-    
-    # Output-Verzeichnis
     out_dir = SCRATCH_DIR / "stage2_test_results"
     
     # ========================================================================
-    # STAGE-1: Suche
+    # STAGE-1: SEARCH
     # ========================================================================
     log.info("\n" + "=" * 60)
-    log.info("PHASE 1: STAGE-1 SUCHE")
+    log.info("PHASE 1: STAGE-1 SEARCH")
     log.info("=" * 60)
     
     try:
         from luna.config import HF_REPO_ID
-        log.info("Lade LunaPipeline...")
+        log.info("Loading LunaPipeline...")
         pipeline = LunaPipeline.from_pretrained(
             HF_REPO_ID,
             device=device,
             config=None
         )
-        log.info("Pipeline geladen")
+        log.info("Pipeline loaded successfully")
         
-        # Führe Stage-1 Suche durch
         hits, lpa_catalog = run_stage1_search(pipeline, nac_ids, query_path)
         
         if not hits:
-            log.error("Keine Kandidaten gefunden! Beende.")
+            log.error("No candidate hits found! Exiting.")
             return 1
         
     except Exception as e:
-        log.error(f"Fehler in Stage-1: {e}")
+        log.error(f"Stage-1 error: {e}")
         import traceback
         traceback.print_exc()
         return 1
     
     # ========================================================================
-    # STAGE-2: Verfeinerung
+    # STAGE-2: REFINEMENT
     # ========================================================================
     log.info("\n" + "=" * 60)
-    log.info("PHASE 2: STAGE-2 VERFEINERUNG")
+    log.info("PHASE 2: STAGE-2 REFINEMENT")
     log.info("=" * 60)
     
     try:
-        # Speicher bereinigen
         if device == "mps":
             torch.mps.empty_cache()
         elif device == "cuda":
@@ -281,45 +262,40 @@ def main():
         import gc
         gc.collect()
         
-        # Lade DINO Encoder für Stage-2
-        log.info("Lade DINO Encoder für Stage-2...")
+        log.info("Loading DINO Encoder for Stage-2...")
         encoder = DINOEncoder(
             lora_dir=HF_REPO_ID,
             base_weights_path=HF_REPO_ID,
             device=device
         )
-        log.info("DINO Encoder geladen")
+        log.info("DINO Encoder loaded successfully")
         
-        # Lade Stage-2 Decoder mit den neuen Fixes
-        log.info("Lade Stage-2 Decoder...")
+        log.info("Loading Stage-2 Decoder...")
         decoder = build_stage2_decoder(device=device)
-        log.info("Stage-2 Decoder geladen")
+        log.info("Stage-2 Decoder loaded successfully")
         
-        # Erstelle Refiner
         refiner = Stage2Refiner(decoder=decoder, dino_encoder=encoder)
-        log.info("Refiner erstellt")
+        log.info("Stage-2 Refiner constructed")
         
-        # Führe Stage-2 Test durch
         refined_hits = run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50)
         
     except Exception as e:
-        log.error(f"Fehler in Stage-2: {e}")
+        log.error(f"Stage-2 error: {e}")
         import traceback
         traceback.print_exc()
         return 1
     
     # ========================================================================
-    # ZUSAMMENFASSUNG
+    # SUMMARY
     # ========================================================================
     log.info("\n" + "=" * 60)
-    log.info("ZUSAMMENFASSUNG")
+    log.info("EXECUTION SUMMARY")
     log.info("=" * 60)
-    log.info(f"Stage-1 Kandidaten: {len(hits)}")
-    log.info(f"Stage-2 bestätigte Pits: {len(refined_hits)}")
-    log.info(f"LPA-Katalog Pits: {len(lpa_catalog)}")
-    log.info(f"Output-Verzeichnis: {out_dir}")
+    log.info(f"Stage-1 Candidate Hits: {len(hits)}")
+    log.info(f"Stage-2 Confirmed Pits: {len(refined_hits)}")
+    log.info(f"LPA Catalog Reference Pits: {len(lpa_catalog)}")
+    log.info(f"Output Directory: {out_dir}")
     
-    # Berechne Match-Rate
     if refined_hits and lpa_catalog:
         matched = 0
         for refined in refined_hits:
@@ -328,12 +304,12 @@ def main():
                     refined.essa_lat, refined.essa_lon,
                     pit["lat"], pit["lon"]
                 )
-                if dist < 300.0:  # Innerhalb von 300m gilt als Match
+                if dist < 300.0:
                     matched += 1
                     break
         
         match_rate = matched / len(lpa_catalog) * 100
-        log.info(f"Match-Rate mit LPA-Katalog: {matched}/{len(lpa_catalog)} ({match_rate:.1f}%)")
+        log.info(f"Match rate with LPA catalog: {matched}/{len(lpa_catalog)} ({match_rate:.1f}%)")
     
     log.info("=" * 60)
     return 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Skript zum Erstellen von Pithos Indizes für Aristarchus NACs.
+"""Script to build Pithos indices for Aristarchus NAC products.
 
-Optimiert für MacBook (MPS/CPU, kein CUDA, begrenzter RAM).
+Optimized for local/laptop execution (MPS/CPU, low VRAM budget).
 """
 
 import os
@@ -10,11 +10,11 @@ import time
 import logging
 from pathlib import Path
 
-# Projekt-Root hinzufügen
-project_root = Path(__file__).parent
+# Add project root to sys.path
+project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Logging konfigurieren
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -25,28 +25,26 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Umgebungsvariablen für Performance
-os.environ["OMP_NUM_THREADS"] = "2"  # Reduziert für Mac
+# Performance tuning environment variables
+os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 
 def main():
     log.info("=" * 60)
-    log.info("ARISTARCHUS INDIZES ERSTELLEN")
+    log.info("BUILDING ARISTARCHUS PITHOS INDICES")
     log.info("=" * 60)
     
     from luna.config import SCRATCH_DIR, INDEX_DIR
     from luna.io.pds_fetch import fetch_nac
     from luna.pipeline import LunaPipeline
     
-    # Device auswählen (MPS falls verfügbar, sonst CPU)
     import torch
     device = (
         "mps" if torch.backends.mps.is_available() else 
         "cpu"
     )
-    log.info(f"Verwendetes Device: {device}")
+    log.info(f"Target device: {device}")
     
-    # NACs die wir indexieren wollen
     nac_ids = ["M109548636RC", "M109548636LC"]
     
     from luna.config import HF_REPO_ID
@@ -54,26 +52,24 @@ def main():
         pipeline = LunaPipeline.from_pretrained(
             HF_REPO_ID,
             device=device,
-            config=None  # Standard Konfiguration
+            config=None
         )
-        log.info("Pipeline geladen")
+        log.info("Pipeline loaded successfully")
     except Exception as e:
-        log.error(f"Fehler beim Laden der Pipeline: {e}")
+        log.error(f"Error loading pipeline: {e}")
         return 1
     
-    # Prozess jedes NAC
     for nac_id in nac_ids:
         nac_path = SCRATCH_DIR / f"{nac_id}.IMG"
         
         if not nac_path.exists():
-            log.info(f"{nac_id}: NAC nicht gefunden unter {nac_path}")
+            log.info(f"{nac_id}: NAC raster not found at {nac_path}")
             continue
         
         log.info(f"\n{'='*60}")
-        log.info(f"Verarbeite {nac_id}...")
+        log.info(f"Processing {nac_id}...")
         log.info(f"{'='*60}")
         
-        # Speicher vor der Verarbeitung bereinigen
         if device == "mps":
             torch.mps.empty_cache()
         elif device == "cuda":
@@ -84,23 +80,20 @@ def main():
         start_time = time.time()
         
         try:
-            # Schritt 1: NAC ingestieren (in Tiles aufteilen und embedden)
-            log.info(f"  Schritt 1/2: Ingestiere {nac_id}...")
+            log.info(f"  Step 1/2: Ingesting {nac_id}...")
             store, metadata = pipeline._ingest(nac_path)
             
             ingest_time = time.time() - start_time
-            log.info(f"  Ingestion abgeschlossen in {ingest_time:.1f}s")
-            log.info(f"     Erstellte {len(metadata)} Tile-Embeddings")
+            log.info(f"  Ingestion completed in {ingest_time:.1f}s")
+            log.info(f"  Generated {len(metadata)} tile embeddings")
             
-            # Schritt 2: Index speichern
-            log.info(f"  Schritt 2/2: Speichere Index...")
+            log.info(f"  Step 2/2: Saving Pithos index...")
             index_path = pipeline._save_index(store, nac_path)
             
             save_time = time.time() - start_time
-            log.info(f"  Index gespeichert in {save_time:.1f}s")
-            log.info(f"     Index-Pfad: {index_path}")
+            log.info(f"  Index saved in {save_time:.1f}s")
+            log.info(f"  Index path: {index_path}")
             
-            # Speicher nach jedem NAC bereinigen
             del store
             del metadata
             if device == "mps":
@@ -110,21 +103,21 @@ def main():
             gc.collect()
             
         except Exception as e:
-            log.error(f"  Fehler bei {nac_id}: {e}")
+            log.error(f"  Error processing {nac_id}: {e}")
             import traceback
             traceback.print_exc()
             continue
     
     log.info("\n" + "=" * 60)
-    log.info("FERTIG!")
+    log.info("COMPLETE!")
     log.info("=" * 60)
-    log.info("Erstellte Indizes:")
+    log.info("Generated indices:")
     for nac_id in nac_ids:
         index_files = list(INDEX_DIR.glob(f"pithos_{nac_id}*"))
         if index_files:
-            log.info(f"  {nac_id}: {len(index_files)} Dateien")
+            log.info(f"  {nac_id}: {len(index_files)} files")
         else:
-            log.info(f"  {nac_id}: Keine Index-Dateien gefunden")
+            log.info(f"  {nac_id}: No index files found")
     
     return 0
 
