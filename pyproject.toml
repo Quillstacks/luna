@@ -22,13 +22,18 @@ dependencies = [
     "pycocotools>=2.0.7",
     "rasterio>=1.3",
     "shapely>=2.0",
-    # "faiss-cpu>=1.8.0",  # replaced by Pithos native kernel (third_party/pithos/)
     "matplotlib>=3.8.0",
-    "transformers>=5.8.1",
+    "transformers>=4.40",
     "torchmetrics>=1.9.0",
     "termcolor>=3.3.0",
-    "peft>=0.19.1",
-    "rich>=13.0.0"
+    "peft>=0.10.0",
+    "rich>=13.0.0",
+    "psutil>=5.9.0",
+    "pandas>=2.0.0",
+    "huggingface-hub>=0.20.0",
+    "scikit-learn>=1.3.0",
+    "numba>=0.59.0",
+    "umap-learn>=0.5.6",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +41,10 @@ dev = [
     "pytest>=8.0.0",
     "pydeps>=1.12.0",
     "vulture>=2.11",
+]
+dashboard = [
+    "dash>=2.14.0",
+    "datashader>=0.16.0",
 ]
 
 [tool.setuptools.packages.find]
