@@ -18,7 +18,7 @@ import numpy as np
 from luna.screening.pithos import PithosMIDB, MOON_ID, MOON_RADIUS, MOON_TIERS
 from luna.screening.protocols import TileMetadata
 
-log = logging.getLogger("luna.storage.pithos_store")
+log = logging.getLogger(__name__)
 
 
 class PithosStore:

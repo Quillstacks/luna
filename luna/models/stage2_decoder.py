@@ -44,9 +44,8 @@ class Stage2Config:
     projection_dim: int = 256
     fpn_dims: list = None
     num_classes: int = 3
-    min_depth_to_width_ratio: float = 0.10
+    min_depth_to_width_ratio: float = 0.04
     border_margin: int = 4
-    min_pit_area_px: int = 100
 
     def __post_init__(self):
         if self.fpn_dims is None:
@@ -100,13 +99,8 @@ class GeometricReconstructor(nn.Module):
             nn.init.kaiming_normal_(new_proj.weight, mode='fan_in', nonlinearity='relu')
             nn.init.zeros_(new_proj.bias)
             self.projection = new_proj
-            # Force FP32 on MPS to avoid dtype mismatch with FP16 biases
-            self.projection = self.projection.float()
+            self.projection = self.projection.to(dtype=next(self.parameters()).dtype)
         
-        # Ensure input is FP32 for projection layer
-        if spatial_tokens.dtype != self.projection.weight.dtype:
-            spatial_tokens = spatial_tokens.to(dtype=self.projection.weight.dtype)
-            
         projected = self.projection(spatial_tokens)
         grid_h, grid_w = self.grid_size
         return projected.permute(0, 2, 1).reshape(batch_size, -1, grid_h, grid_w)
@@ -215,11 +209,10 @@ class PhysicsValidationResult:
 
 class PhysicsValidator:
     """Validates structural shadows using solar incidence geometry."""
-    def __init__(self, pixel_scale_meters: float = 0.5, min_depth_to_width_ratio: float = 0.1, border_margin: int = 4, min_pit_area_px: int = 100):
+    def __init__(self, pixel_scale_meters: float = 0.5, min_depth_to_width_ratio: float = 0.1, border_margin: int = 4):
         self.pixel_scale = pixel_scale_meters
         self.min_depth_ratio = min_depth_to_width_ratio
         self.border_margin = border_margin
-        self.min_pit_area_px = min_pit_area_px
     
     def validate_detection(self, shadow_mask: np.ndarray, edge_mask: np.ndarray, sub_solar_azimuth: float, incidence_angle_deg: float, pixel_scale: float = 0.5, lon: Optional[float] = None, lat: Optional[float] = None) -> PhysicsValidationResult:
         incidence_rad = np.radians(incidence_angle_deg)
@@ -238,15 +231,6 @@ class PhysicsValidator:
 
         shadow_y, shadow_x = np.where(shadow_mask > 0)
         edge_y, edge_x = np.where(edge_mask > 0)
-        
-        # Check minimum pit area
-        if shadow_mask.sum() < self.min_pit_area_px:
-            return PhysicsValidationResult(
-                is_valid_pit=False, is_boulder=True, depth_estimate_meters=0.0,
-                shadow_vector_degrees=0.0, solar_vector_degrees=sub_solar_azimuth,
-                alignment_error_degrees=180.0, width_pixels=0, height_pixels=0,
-                class_confidence=0.0, lon=lon, lat=lat
-            )
         
         if len(shadow_x) == 0 or len(edge_x) == 0:
             return PhysicsValidationResult(
@@ -274,14 +258,10 @@ class PhysicsValidator:
         width_px = int(np.max(shadow_x) - np.min(shadow_x))
         height_px = int(np.max(shadow_y) - np.min(shadow_y))
         
-        # Project shadow pixels onto the shadow direction vector to get the actual shadow length
-        shadow_rad = np.radians(expected_vector_deg)
-        cos_dir = np.cos(shadow_rad)
-        sin_dir = np.sin(shadow_rad)
-        proj_shadow = shadow_x * cos_dir + shadow_y * sin_dir
-        shadow_length_px = np.max(proj_shadow) - np.min(proj_shadow) if len(proj_shadow) > 0 else 0
+        shadow_distances = np.sqrt((shadow_x - edge_cx)**2 + (shadow_y - edge_cy)**2)
+        max_shadow_distance_px = shadow_distances.max() if len(shadow_distances) > 0 else 0
         
-        shadow_length_m = shadow_length_px * pixel_scale
+        shadow_length_m = max_shadow_distance_px * pixel_scale
         tan_incidence = max(np.tan(incidence_rad), 0.01)
         depth_m = shadow_length_m / tan_incidence
         width_m = max(width_px, height_px) * pixel_scale
@@ -321,27 +301,12 @@ class Stage2DenseDecoder(nn.Module):
         final_channels = config.fpn_dims[-1] if config.fpn_dims else config.projection_dim // 4
         self.classification_head = ThreeClassSegmentationHead(in_channels=final_channels, num_classes=config.num_classes)
         
-        # Force FP32 for all layers on MPS to avoid FP16 bias issues
-        if self.device == "mps":
-            self.reconstructor = self.reconstructor.float()
-            self.fpn = self.fpn.float()
-            self.classification_head = self.classification_head.float()
-        
         self._initialize_weights()
         self.to(self.device)
         if self.device == "cuda":
             self.half()
             
-        # Ensure all layers are FP32 on MPS (FP16 not fully supported on MPS for some ops)
-        if self.device == "mps":
-            self.float()
-            # Also ensure all submodules are FP32
-            for module in self.modules():
-                if hasattr(module, 'float'):
-                    module.float()
-        
-        self.physics_validator = PhysicsValidator(pixel_scale_meters=0.5, min_depth_to_width_ratio=config.min_depth_to_width_ratio, border_margin=config.border_margin, min_pit_area_px=config.min_pit_area_px)
-        
+        self.physics_validator = PhysicsValidator(pixel_scale_meters=0.5, min_depth_to_width_ratio=config.min_depth_to_width_ratio, border_margin=config.border_margin)
         log.info(f"Stage2DenseDecoder stacked successfully on {self.device}")
 
     def _initialize_weights(self):
@@ -493,28 +458,16 @@ class Stage2Refiner:
                         from torchvision import transforms
                         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                         features = self.dino_encoder._backbone_module.forward_features(normalize(image_tensor))
-                        spatial_tokens = self.decoder.token_extractor.extract_spatial_tokens(features)
-                        # Force FP32 on MPS - DINO encoder outputs FP16, decoder expects FP32
-                        if device == "mps":
-                            spatial_tokens = spatial_tokens.float()
-                        else:
-                            # Match decoder dtype
-                            decoder_dtype = next(self.decoder.parameters()).dtype
-                            spatial_tokens = spatial_tokens.to(dtype=decoder_dtype)
+                        spatial_tokens = self.decoder.token_extractor.extract_spatial_tokens(features).to(dtype=next(self.decoder.parameters()).dtype)
                 else:
                     spatial_tokens = torch.randn(1, 256, 1024).to(device)
                 
                 with torch.no_grad():
-                    prob_masks = self.decoder.get_probability_masks(spatial_tokens, temperature=0.5)
+                    prob_masks = self.decoder.get_probability_masks(spatial_tokens, temperature=0.7)
                 
                 prob_masks_np = prob_masks.cpu().numpy()[0]
                 class_preds = np.argmax(prob_masks_np, axis=0)
                 shadow_mask, edge_mask = prob_masks_np[1, :, :], prob_masks_np[2, :, :]
-                
-                # Apply morphological smoothing to reduce noise
-                from skimage.morphology import opening, closing, disk
-                shadow_mask = opening(shadow_mask, disk(3))
-                edge_mask = closing(edge_mask, disk(2))
                 
                 if shadow_mask.sum() == 0 or edge_mask.sum() == 0:
                     combined_score = 0.0
@@ -522,19 +475,19 @@ class Stage2Refiner:
                     combined_score = float((shadow_mask.max() + edge_mask.max()) / 2.0)
                 
                 physics_result = self.decoder.physics_validator.validate_detection(
-                    shadow_mask > 0.5, edge_mask > 0.5, sub_solar_azimuth, incidence_angle, pixel_scale, hit.lon, hit.lat
+                    shadow_mask > score_thr, edge_mask > 0.5, sub_solar_azimuth, incidence_angle, pixel_scale, hit.lon, hit.lat
                 )
                 
                 svm_passed = True
                 if svm_model is not None and svm_scaler is not None:
                     try:
-                        feats = self._extract_svm_features(hit, shadow_mask, edge_mask, physics_result, pixel_scale)
+                        feats = self._extract_svm_features(hit, shadow_mask, edge_mask, physics_result)
                         feats_scaled = svm_scaler.transform(feats.reshape(1, -1))
                         decision_score = svm_model.decision_function(feats_scaled)[0]
 
                         log.info(f"  SVM Gatekeeper decision for {hit.product_id}: decision_score={decision_score:.4f}")
 
-                        if decision_score < 0.0: 
+                        if decision_score < -0.5: 
                             svm_passed = False
                     except Exception as svm_err:
                         log.warning(f"  SVM prediction failed: {svm_err}")
@@ -550,33 +503,25 @@ class Stage2Refiner:
                     precise_y = y0 + physics_result.tile_centroid_y
                     
                     try:
-                        # 1. PRIMARY: SPICE (most accurate for lunar coordinates)
-                        from luna.io.spice_project import image_to_ground
-                        from luna.config import SCRATCH_DIR
-                        target_img = SCRATCH_DIR / f"{hit.product_id}.IMG"
-                        refined_lon, refined_lat = image_to_ground(str(target_img), precise_x, precise_y)
-                        if refined_lon == 0.0 and refined_lat == 0.0:
-                            raise ValueError("SPICE returned invalid 0.0, 0.0")
-                        log.debug(f"  Coordinate projection: Using SPICE (lon={refined_lon:.6f}, lat={refined_lat:.6f})")
-                    except Exception as spice_error:
-                        log.warning(f"SPICE failed, falling back to bilinear: {spice_error}")
+                        # Primary: Use precise bilinear projection (LOLA DEM-registered reference frame)
+                        refined_lon, refined_lat = pixel_to_lonlat(proj, precise_x, precise_y)
+                        if math.isnan(refined_lon) or math.isnan(refined_lat):
+                            raise ValueError("Bilinear projection returned NaN")
+                    except Exception as proj_error:
+                        log.warning(f"Bilinear projection failed, falling back to SPICE: {proj_error}")
                         try:
-                            # 2. FALLBACK: Bilinear Projection (LOLA DEM-registered)
-                            if proj is None:
-                                raise ValueError("No bilinear projection available")
-                            refined_lon, refined_lat = pixel_to_lonlat(proj, precise_x, precise_y)
-                            if math.isnan(refined_lon) or math.isnan(refined_lat):
-                                raise ValueError("Bilinear projection returned NaN")
-                            log.debug(f"  Coordinate projection: Using Bilinear (lon={refined_lon:.6f}, lat={refined_lat:.6f})")
-                        except Exception as proj_error:
-                            log.warning(f"Bilinear failed, using manual calculation: {proj_error}")
-                            # 3. MANUAL FALLBACK (corrected!)
-                            mean_lat = hit.lat
+                            from luna.io.spice_project import image_to_ground
+                            from luna.config import SCRATCH_DIR
+                            target_img = SCRATCH_DIR / f"{hit.product_id}.IMG"
+                            refined_lon, refined_lat = image_to_ground(str(target_img), precise_x, precise_y)
+                            if refined_lon == 0.0 and refined_lat == 0.0:
+                                raise ValueError("SPICE returned 0.0, 0.0")
+                        except Exception as spice_error:
+                            log.error(f"All coordinate projection methods failed: {spice_error}")
                             delta_lat = meter_dy / LUNAR_METERS_PER_DEGREE
-                            delta_lon = meter_dx / (LUNAR_METERS_PER_DEGREE * math.cos(math.radians(mean_lat)))
+                            delta_lon = meter_dx / (LUNAR_METERS_PER_DEGREE * math.cos(math.radians(hit.lat)))
                             refined_lat = hit.lat + delta_lat
                             refined_lon = hit.lon + delta_lon
-                            log.debug(f"  Coordinate projection: Using manual calculation (lon={refined_lon:.6f}, lat={refined_lat:.6f})")
                     
                     refined_hit = RefinedHit(
                         rank=hit.rank, product_id=hit.product_id, votes=hit.votes, dino_score=hit.score,
@@ -639,8 +584,8 @@ class Stage2Refiner:
         plt.savefig(out_dir / f"stage2_{product_id}_rank_{rank}.png", dpi=150)
         plt.close()
 
-    def _extract_svm_features(self, hit, shadow_mask: np.ndarray, edge_mask: np.ndarray, physics_result, pixel_scale: float = 0.5) -> np.ndarray:
-        """Extracts 12 normalized geometric and neural features for the SVM gatekeeper."""
+    def _extract_svm_features(self, hit, shadow_mask: np.ndarray, edge_mask: np.ndarray, physics_result) -> np.ndarray:
+        """Extracts 7 normalized geometric and neural features for the SVM gatekeeper."""
         dino_score = float(hit.score)
         votes = float(hit.votes)
         shadow_ratio = float(shadow_mask.sum()) / (256.0 * 256.0)
@@ -658,31 +603,7 @@ class Stage2Refiner:
         aspect_ratio = float(physics_result.width_pixels) / float(physics_result.height_pixels + 1e-6)
         alignment_error = float(physics_result.alignment_error_degrees)
         
-        # New features
-        shadow_rad = np.radians(physics_result.solar_vector_degrees)
-        cos_dir = np.cos(shadow_rad)
-        sin_dir = np.sin(shadow_rad)
-        proj_shadow = shadow_x * cos_dir + shadow_y * sin_dir
-        max_shadow_length_px = float(np.max(proj_shadow) - np.min(proj_shadow)) if len(proj_shadow) > 0 else 0.0
-        depth_width_ratio = float(physics_result.depth_estimate_meters / max(physics_result.width_pixels * pixel_scale, 1e-6))
-        pit_area_px = float(shadow_mask.sum())
-        shadow_edge_ratio = float(shadow_mask.sum() / max(edge_mask.sum(), 1))
-        
-        # Circularity (0=line, 1=perfect circle)
-        from skimage.measure import label, regionprops
-        labeled = label(shadow_mask > 0.5)
-        if len(np.unique(labeled)) > 1:
-            largest_region = max(regionprops(labeled), key=lambda r: r.area)
-            circularity = 4 * np.pi * largest_region.area / (largest_region.perimeter ** 2 + 1e-6)
-        else:
-            circularity = 0.0
-        
-        feats = np.array([
-            dino_score, votes, shadow_ratio, edge_ratio,
-            centroid_dist, aspect_ratio, alignment_error,
-            max_shadow_length_px, depth_width_ratio, pit_area_px,
-            shadow_edge_ratio, circularity
-        ], dtype=np.float32)
+        feats = np.array([dino_score, votes, shadow_ratio, edge_ratio, centroid_dist, aspect_ratio, alignment_error], dtype=np.float32)
         return np.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
 
     def train_svm(self, hits: list, catalog_path: str = "catalogs/lpa.csv") -> dict:
@@ -764,37 +685,27 @@ class Stage2Refiner:
                         from torchvision import transforms
                         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                         features = self.dino_encoder._backbone_module.forward_features(normalize(image_tensor))
-                        spatial_tokens = self.decoder.token_extractor.extract_spatial_tokens(features)
-                        # Force FP32 on MPS - DINO encoder outputs FP16, decoder expects FP32
-                        if device == "mps":
-                            spatial_tokens = spatial_tokens.float()
-                        else:
-                            # Match decoder dtype
-                            decoder_dtype = next(self.decoder.parameters()).dtype
-                            spatial_tokens = spatial_tokens.to(dtype=decoder_dtype)
+                        spatial_tokens = self.decoder.token_extractor.extract_spatial_tokens(features).to(dtype=next(self.decoder.parameters()).dtype)
                 else:
                     spatial_tokens = torch.randn(1, 256, 1024).to(device)
                 
                 with torch.no_grad():
-                    prob_masks = self.decoder.get_probability_masks(spatial_tokens, temperature=0.5)
+                    prob_masks = self.decoder.get_probability_masks(spatial_tokens, temperature=0.7)
                 
                 prob_masks_np = prob_masks.cpu().numpy()[0]
                 shadow_mask = prob_masks_np[1, :, :]
                 edge_mask = prob_masks_np[2, :, :]
                 
-                # Apply morphological smoothing for consistency with refine()
-                from skimage.morphology import opening, closing, disk
-                shadow_mask = opening(shadow_mask, disk(3))
-                edge_mask = closing(edge_mask, disk(2))
-                
+                # FIXED: Threshold must match the target inference score (0.7) so centroid calculations match!
                 physics_result = self.decoder.physics_validator.validate_detection(
-                    shadow_mask > 0.5, edge_mask > 0.5, sub_solar_azimuth, incidence_angle, pixel_scale, hit.lon, hit.lat
+                    shadow_mask > 0.70, edge_mask > 0.5, sub_solar_azimuth, incidence_angle, pixel_scale, hit.lon, hit.lat
                 )
                 
                 # Calculate precise coordinates (bilinear or SPICE)
                 precise_x = x0 + physics_result.tile_centroid_x
                 precise_y = y0 + physics_result.tile_centroid_y
                 
+                # >>> FIX IS HERE: Identical coordinate projection block as in refine() <<<
                 try:
                     if proj is None:
                         raise ValueError("No bilinear projection available")
@@ -830,9 +741,8 @@ class Stage2Refiner:
                     if dist < best_dist:
                         best_dist = dist
                 
-                # Stricter labeling: only label as positive if within 100m of a catalog pit
-                label = 1 if best_dist < 100.0 else 0
-                feats = self._extract_svm_features(hit, shadow_mask, edge_mask, physics_result, pixel_scale)
+                label = 1 if best_dist < 300.0 else 0
+                feats = self._extract_svm_features(hit, shadow_mask, edge_mask, physics_result)
                 
                 X.append(feats)
                 y.append(label)
@@ -853,23 +763,15 @@ class Stage2Refiner:
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
-        # Use RBF kernel for better non-linear separation
-        svm = SVC(kernel='rbf', probability=True, C=1.0, class_weight='balanced', gamma='scale')
+        svm = SVC(kernel='linear', probability=True, C=1.0, class_weight='balanced')
         svm.fit(X_scaled, y)
         
-        # Log feature importance (for RBF, we use permutation importance)
-        try:
-            from sklearn.inspection import permutation_importance
-            result = permutation_importance(svm, X_scaled, y, n_repeats=10, random_state=42)
-            feature_names = ["dino_score", "votes", "shadow_ratio", "edge_ratio", 
-                           "centroid_dist", "aspect_ratio", "alignment_error",
-                           "max_shadow_length", "depth_width_ratio", "pit_area",
-                           "shadow_edge_ratio", "circularity"]
-            log.info("SVM Feature Importance (Permutation):")
-            for name, imp in zip(feature_names, result.importances_mean):
-                log.info(f"  {name:25s}: {imp:.4f}")
-        except ImportError:
-            log.info("Sklearn permutation_importance not available, skipping feature importance")
+        # Log feature coefficients for interpretability
+        coefs = svm.coef_[0]
+        feature_names = ["dino_similarity", "votes", "shadow_area_ratio", "rim_area_ratio", "centroid_dist", "aspect_ratio", "alignment_error"]
+        log.info("SVM Feature Coefficients (Interpretability Report):")
+        for name, coef in zip(feature_names, coefs):
+            log.info(f"  {name:20s}: {coef:.4f}")
             
         from luna.config import SCRATCH_DIR
         save_path = SCRATCH_DIR / "stage2_svm.pkl"

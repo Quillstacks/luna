@@ -153,9 +153,10 @@ def main() -> None:
             "cpu"
         )
     
+    from luna.config import HF_REPO_ID
     encoder = DINOEncoder(
-        lora_dir="F1nnSBK/lunar-dinov3-lora",
-        base_weights_path="F1nnSBK/lunar-dinov3-lora",
+        lora_dir=HF_REPO_ID,
+        base_weights_path=HF_REPO_ID,
         matryoshka_dim=384,
         device=device,
     )

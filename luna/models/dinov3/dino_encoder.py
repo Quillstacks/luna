@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torchvision import transforms
 from huggingface_hub import hf_hub_download
 
-log = logging.getLogger("luna.models.dinov3")
+log = logging.getLogger(__name__)
 
 
 class DINOEncoder:
@@ -78,10 +78,14 @@ class DINOEncoder:
                 _repo_slug = base_weights_path.replace("/", "--")
                 _hf_cache = _Path.home() / ".cache" / "huggingface" / "hub"
                 _candidates = []
-                for fname in filenames_to_try:
-                    _candidates.extend(
-                        list((_hf_cache / f"models--{_repo_slug}").rglob(fname))
-                    )
+                snapshots_dir = _hf_cache / f"models--{_repo_slug}" / "snapshots"
+                if snapshots_dir.exists():
+                    for snap in snapshots_dir.iterdir():
+                        if snap.is_dir():
+                            for fname in filenames_to_try:
+                                candidate = snap / fname
+                                if candidate.exists():
+                                    _candidates.append(candidate)
                 if _candidates:
                     _candidates = [
                         p for p in _candidates
@@ -147,6 +151,17 @@ class DINOEncoder:
             raise
 
         lora_path_str = str(lora_dir)
+        
+        # Dynamic check in standard user Hugging Face cache if lora_path_str is a HF repo slug
+        if not os.path.isdir(lora_path_str) and "/" in lora_path_str:
+            _repo_slug = lora_path_str.replace("/", "--")
+            _hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+            _snapshots = _hf_cache / f"models--{_repo_slug}" / "snapshots"
+            if _snapshots.exists():
+                for snap in _snapshots.iterdir():
+                    if snap.is_dir():
+                        lora_path_str = str(snap)
+                        break
         
         if os.path.isdir(lora_path_str) and os.path.exists(os.path.join(lora_path_str, "weights")):
             lora_path_str = os.path.join(lora_path_str, "weights")

@@ -44,13 +44,17 @@ def _find_lib(use_cuda: bool = False) -> Path:
     if system == "Linux":
         if use_cuda:
             candidates = [
+                _THIRD_PARTY / "libpithos-linux-cuda-aarch64.so",
                 _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
                 _THIRD_PARTY / "libpithos-cuda.so",
+                _THIRD_PARTY / "libpithos-linux-aarch64.so",
                 _THIRD_PARTY / "libpithos-linux-x86_64.so",
                 _THIRD_PARTY / "libpithos.so",
             ]
         else:
             candidates = [
+                _THIRD_PARTY / "libpithos-linux-aarch64.so",
+                _THIRD_PARTY / "libpithos-linux-cuda-aarch64.so",
                 _THIRD_PARTY / "libpithos-linux-x86_64.so",
                 _THIRD_PARTY / "libpithos.so",
                 _THIRD_PARTY / "libpithos-cuda.so",
@@ -181,8 +185,11 @@ class PithosMIDB:
         if cls._instance is None:
             instance = super().__new__(cls)
             resolved = Path(lib_path) if lib_path is not None else _find_lib(use_cuda=use_cuda)
-            instance._init_ffi(resolved)
+            instance._init_ffi(resolved, use_cuda=use_cuda)
             cls._instance = instance
+        else:
+            if use_cuda and not cls._instance.use_cuda:
+                cls._instance._enable_cuda_dynamically()
         return cls._instance
 
     def __init__(self, lib_path: str | Path | None = None, use_cuda: bool = False) -> None:
@@ -192,7 +199,7 @@ class PithosMIDB:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def _init_ffi(self, lib_path: Path) -> None:
+    def _init_ffi(self, lib_path: Path, use_cuda: bool = False) -> None:
         """Load the shared library and register all C-API signatures."""
         log.info("Loading Pithos native library from %s …", lib_path)
         self.lib     = ctypes.CDLL(str(lib_path))
@@ -215,7 +222,28 @@ class PithosMIDB:
         if status != 0:
             raise IndexError(f"vdb_init failed (code {status}).")
 
+        self.use_cuda = False
+        if use_cuda and getattr(self, "_has_cuda_api", False):
+            with _suppress_stderr():
+                cuda_status = self.lib.vdb_cuda_init(self.thread, 0)
+                if cuda_status == 0:
+                    self.use_cuda = True
+                    log.info("Pithos CUDA acceleration enabled successfully (device 0).")
+                else:
+                    log.warning("vdb_cuda_init failed (code %d). Falling back to CPU.", cuda_status)
+
         log.info("Pithos isolate initialized successfully.")
+
+    def _enable_cuda_dynamically(self) -> None:
+        """Attempt to enable CUDA runtime dynamically on an active isolate thread."""
+        if getattr(self, "_has_cuda_api", False) and not self.use_cuda:
+            with _suppress_stderr():
+                cuda_status = self.lib.vdb_cuda_init(self.thread, 0)
+                if cuda_status == 0:
+                    self.use_cuda = True
+                    log.info("Pithos CUDA acceleration enabled dynamically (device 0).")
+                else:
+                    log.warning("Dynamic vdb_cuda_init failed (code %d). Remaining on CPU.", cuda_status)
 
     def _configure_signatures(self) -> None:
         """Register ctypes argtypes / restype for every exported symbol."""
@@ -247,9 +275,26 @@ class PithosMIDB:
             ctypes.c_void_p,    # vectors* (float32[])
             ctypes.c_int,       # n_records
             ctypes.c_int,       # q_mode
-            ctypes.c_bool,      # use_fp16
         ]
         lib.vdb_compile_index_file.restype = ctypes.c_int
+
+        # vdb_compile_index_file_ext(thread, path, planet_id, planet_radius,
+        #   dimension, tiers*, n_tiers, ids*, vectors*, n_records, q_mode, write_fp16)
+        lib.vdb_compile_index_file_ext.argtypes = [
+            P,                  # thread
+            ctypes.c_char_p,    # path
+            ctypes.c_byte,      # planet_id
+            ctypes.c_longlong,  # planet_radius
+            ctypes.c_int,       # dimension
+            ctypes.c_void_p,    # tiers*  (int32[])
+            ctypes.c_int,       # n_tiers
+            ctypes.c_void_p,    # ids*    (int64[])
+            ctypes.c_void_p,    # vectors* (float32[])
+            ctypes.c_int,       # n_records
+            ctypes.c_int,       # q_mode
+            ctypes.c_int,       # write_fp16
+        ]
+        lib.vdb_compile_index_file_ext.restype = ctypes.c_int
 
         lib.vdb_load_index.argtypes = [P, ctypes.c_char_p, ctypes.c_char_p]
         lib.vdb_load_index.restype  = ctypes.c_int
@@ -344,6 +389,36 @@ class PithosMIDB:
         ]
         lib.vdb_transform_and_quantize.restype = ctypes.c_int
 
+        # CUDA API registrations (optional fallback)
+        try:
+            lib.vdb_cuda_init.argtypes = [P, ctypes.c_int]
+            lib.vdb_cuda_init.restype  = ctypes.c_int
+
+            lib.vdb_cuda_shutdown.argtypes = [P]
+            lib.vdb_cuda_shutdown.restype  = ctypes.c_int
+
+            lib.vdb_cuda_is_available.argtypes = [P]
+            lib.vdb_cuda_is_available.restype  = ctypes.c_int
+
+            lib.vdb_cuda_batch_search.argtypes = [
+                P, ctypes.c_char_p,
+                ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                ctypes.c_void_p, ctypes.c_void_p,
+            ]
+            lib.vdb_cuda_batch_search.restype = ctypes.c_int
+
+            lib.vdb_cuda_query_planetary_grid.argtypes = [
+                P, ctypes.c_char_p,
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                ctypes.c_int, ctypes.c_void_p,
+            ]
+            lib.vdb_cuda_query_planetary_grid.restype = ctypes.c_longlong
+            
+            self._has_cuda_api = True
+        except AttributeError:
+            log.warning("CUDA API functions not found in libpithos.")
+            self._has_cuda_api = False
+
     # ------------------------------------------------------------------
     # Static helpers
     # ------------------------------------------------------------------
@@ -413,7 +488,7 @@ class PithosMIDB:
         tiers_c   = np.ascontiguousarray(tiers,   dtype=np.int32)
 
         with _suppress_stderr():
-            status = self.lib.vdb_compile_index_file(
+            status = self.lib.vdb_compile_index_file_ext(
                 self.thread,
                 str(file_path).encode(),
                 ctypes.c_byte(planet_id),
@@ -425,10 +500,10 @@ class PithosMIDB:
                 vectors_c.ctypes.data_as(ctypes.c_void_p),
                 ctypes.c_int(n),
                 ctypes.c_int(q_mode),
-                ctypes.c_bool(use_fp16),
+                ctypes.c_int(1 if use_fp16 else 0),
             )
         if status != 0:
-            raise IndexError(f"vdb_compile_index_file failed (code {status}).")
+            raise IndexError(f"vdb_compile_index_file_ext failed (code {status}).")
 
     def load_index(
         self,
@@ -499,15 +574,26 @@ class PithosMIDB:
         out_dists = np.empty(n * k, dtype=np.int32)
 
         with _suppress_stderr():
-            status = self.lib.vdb_batch_search(
-                self.thread,
-                index_name.encode(),
-                queries_c.ctypes.data_as(ctypes.c_void_p),
-                ctypes.c_int(n),
-                ctypes.c_int(k),
-                out_ids.ctypes.data_as(ctypes.c_void_p),
-                out_dists.ctypes.data_as(ctypes.c_void_p),
-            )
+            if getattr(self, "use_cuda", False) and getattr(self, "_has_cuda_api", False):
+                status = self.lib.vdb_cuda_batch_search(
+                    self.thread,
+                    index_name.encode(),
+                    queries_c.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(n),
+                    ctypes.c_int(k),
+                    out_ids.ctypes.data_as(ctypes.c_void_p),
+                    out_dists.ctypes.data_as(ctypes.c_void_p),
+                )
+            else:
+                status = self.lib.vdb_batch_search(
+                    self.thread,
+                    index_name.encode(),
+                    queries_c.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(n),
+                    ctypes.c_int(k),
+                    out_ids.ctypes.data_as(ctypes.c_void_p),
+                    out_dists.ctypes.data_as(ctypes.c_void_p),
+                )
         if status != 0:
             raise SearchError(f"vdb_batch_search failed (code {status}).")
 
@@ -537,15 +623,26 @@ class PithosMIDB:
         """
         queries_c = np.ascontiguousarray(queries, dtype=np.float32)
         with _suppress_stderr():
-            return int(self.lib.vdb_query_planetary_grid(
-                self.thread,
-                index_name.encode(),
-                queries_c.ctypes.data_as(ctypes.c_void_p),
-                families.ctypes.data_as(ctypes.c_void_p),
-                thresholds.ctypes.data_as(ctypes.c_void_p),
-                ctypes.c_int(queries.shape[0]),
-                voting_mask.ctypes.data_as(ctypes.c_void_p),
-            ))
+            if getattr(self, "use_cuda", False) and getattr(self, "_has_cuda_api", False):
+                return int(self.lib.vdb_cuda_query_planetary_grid(
+                    self.thread,
+                    index_name.encode(),
+                    queries_c.ctypes.data_as(ctypes.c_void_p),
+                    families.ctypes.data_as(ctypes.c_void_p),
+                    thresholds.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(queries.shape[0]),
+                    voting_mask.ctypes.data_as(ctypes.c_void_p),
+                ))
+            else:
+                return int(self.lib.vdb_query_planetary_grid(
+                    self.thread,
+                    index_name.encode(),
+                    queries_c.ctypes.data_as(ctypes.c_void_p),
+                    families.ctypes.data_as(ctypes.c_void_p),
+                    thresholds.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_int(queries.shape[0]),
+                    voting_mask.ctypes.data_as(ctypes.c_void_p),
+                ))
 
     # ------------------------------------------------------------------
     # Delta Buffer API

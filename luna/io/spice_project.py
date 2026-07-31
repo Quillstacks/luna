@@ -42,7 +42,7 @@ import numpy as np
 import pvl
 import spiceypy as sp
 
-log = logging.getLogger("luna.io.spice_project")
+log = logging.getLogger(__name__)
 
 # Kernel root. Layout mirrors NAIF's archive: lsk/ sclk/ pck/ fk/ ik/ spk/ ck/.
 DEFAULT_KERNEL_ROOT = Path(__file__).resolve().parents[2] / "data" / "spice" / "lro"

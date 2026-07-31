@@ -276,8 +276,9 @@ def main() -> None:
 
     log.info("Loaded %d / %d NAC contexts.", len(contexts), len(NAC_PRODUCT_IDS))
 
-    encoder    = DINOEncoder(lora_dir="F1nnSBK/lunar-dinov3-lora",
-                             base_weights_path="F1nnSBK/lunar-dinov3-lora")
+    from luna.config import HF_REPO_ID
+    encoder    = DINOEncoder(lora_dir=HF_REPO_ID,
+                             base_weights_path=HF_REPO_ID)
     pit_paths  = list(PITS_DIR.glob("*.npy"))
     log.info("Encoding %d pit anchors ...", len(pit_paths))
 

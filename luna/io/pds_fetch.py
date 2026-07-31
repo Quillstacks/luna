@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from .pds_index import PDSIndex, _normalize_product_id
 
-log = logging.getLogger("luna.io.pds_fetch")
+log = logging.getLogger(__name__)
 
 _index: Optional[PDSIndex] = None
 

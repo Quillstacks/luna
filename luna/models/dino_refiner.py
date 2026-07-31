@@ -173,14 +173,15 @@ class DINORefiner:
         """
         from luna.models.dinov3 import DINOEncoder
         from luna.io.nac_reader import _label_byte_count
+        from luna.config import HF_REPO_ID
         import pvl
         
         t_start = time.perf_counter()
         
         # Load DINO encoder (same as Phase 1 for consistency)
         encoder = DINOEncoder(
-            lora_dir="F1nnSBK/lunar-dinov3-lora",
-            base_weights_path="F1nnSBK/lunar-dinov3-lora",
+            lora_dir=HF_REPO_ID,
+            base_weights_path=HF_REPO_ID,
             matryoshka_dim=384,
             device=self.device,
         )

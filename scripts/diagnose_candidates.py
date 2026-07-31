@@ -10,7 +10,8 @@ from luna import LunaPipeline
 from luna.screening.pithos import PithosMIDB
 
 def main():
-    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
+    from luna.config import HF_REPO_ID
+    pipeline = LunaPipeline.from_pretrained(HF_REPO_ID)
     nac = "M1116841932RC"
     query_dir = Path("data/_scratch/pits/")
     

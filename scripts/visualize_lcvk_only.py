@@ -33,7 +33,8 @@ def normalise_uint8(arr: np.ndarray) -> np.ndarray:
     return np.clip((arr - lo) / (hi - lo + 1e-6), 0, 1)
 
 def main():
-    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
+    from luna.config import HF_REPO_ID
+    pipeline = LunaPipeline.from_pretrained(HF_REPO_ID)
     nac = "M1116841932RC"
     query_dir = Path("data/_scratch/pits/")
     
