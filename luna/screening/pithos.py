@@ -35,50 +35,53 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Locate bundled native library
 # ---------------------------------------------------------------------------
-_THIRD_PARTY = Path(__file__).resolve().parents[2] / "third_party" / "pithos"
+_THIRD_PARTY_PATHS = [Path(__file__).resolve().parents[2] / "third_party" / "pithos"]
 
-
-def _find_lib(use_cuda: bool = False) -> Path:
+def _find_lib(use_cuda: bool = False) -> Path | None:
     system = platform.system()
+    candidates = []
     
-    if system == "Linux":
-        if use_cuda:
-            candidates = [
-                _THIRD_PARTY / "libpithos-linux-cuda-aarch64.so",
-                _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
-                _THIRD_PARTY / "libpithos-cuda.so",
-                _THIRD_PARTY / "libpithos-linux-aarch64.so",
-                _THIRD_PARTY / "libpithos-linux-x86_64.so",
-                _THIRD_PARTY / "libpithos.so",
-            ]
+    for base in _THIRD_PARTY_PATHS:
+        if system == "Linux":
+            if use_cuda:
+                candidates.extend([
+                    base / "libpithos-linux-cuda-aarch64.so",
+                    base / "libpithos-linux-x86_64-cuda.so",
+                    base / "libpithos-cuda.so",
+                    base / "libpithos-linux-aarch64.so",
+                    base / "libpithos-linux-x86_64.so",
+                    base / "libpithos.so",
+                ])
+            else:
+                candidates.extend([
+                    base / "libpithos-linux-aarch64.so",
+                    base / "libpithos-linux-cuda-aarch64.so",
+                    base / "libpithos-linux-x86_64.so",
+                    base / "libpithos.so",
+                    base / "libpithos-cuda.so",
+                    base / "libpithos-linux-x86_64-cuda.so",
+                ])
+        elif system == "Darwin":
+            candidates.extend([
+                base / "libpithos-macos-aarch64.dylib",
+                base / "libpithos.dylib",
+            ])
         else:
-            candidates = [
-                _THIRD_PARTY / "libpithos-linux-aarch64.so",
-                _THIRD_PARTY / "libpithos-linux-cuda-aarch64.so",
-                _THIRD_PARTY / "libpithos-linux-x86_64.so",
-                _THIRD_PARTY / "libpithos.so",
-                _THIRD_PARTY / "libpithos-cuda.so",
-                _THIRD_PARTY / "libpithos-linux-x86_64-cuda.so",
-            ]
-    elif system == "Darwin":
-        candidates = [
-            _THIRD_PARTY / "libpithos-macos-aarch64.dylib",
-            _THIRD_PARTY / "libpithos.dylib",
-        ]
-    else:
-        candidates = [
-            _THIRD_PARTY / "libpithos-linux-x86_64.so",
-            _THIRD_PARTY / "libpithos.so",
-        ]
+            candidates.extend([
+                base / "libpithos-linux-x86_64.so",
+                base / "libpithos.so",
+            ])
     
     for p in candidates:
         if p.exists():
             return p
     
-    raise FileNotFoundError(
-        f"Pithos native library not found. Expected one of:\n"
-        + "\n".join(f"  {p}" for p in candidates)
+    log.warning(
+        "Pithos native shared library (libpithos) not found in system or third_party directory. "
+        "Native Pithos FFI acceleration disabled; static utilities (e.g. binarize) remain active. "
+        "To enable native indexing, download the shared library asset or set lib_path."
     )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -113,17 +116,16 @@ def _build_hadamard_384() -> np.ndarray:
         [ 1, -1,  1,  1,  1, -1, -1, -1,  1, -1, -1,  1],
         [ 1,  1, -1,  1,  1,  1, -1, -1, -1,  1, -1, -1],
     ], dtype=np.float32)
-    return np.kron(H12, H32)   # (384, 384) float32
+
+    return np.kron(H12, H32)
 
 
-_H384: np.ndarray = _build_hadamard_384()
+_H384 = _build_hadamard_384()
 _SCALE: float = float(np.sqrt(_DINO_DIM))
 
 # ---------------------------------------------------------------------------
-# GraalVM isolate handle types (opaque)
+# C-API Data Structures  (must mirror native/pithos_c_api.h)
 # ---------------------------------------------------------------------------
-
-
 class _GraalIsolate(ctypes.Structure):
     pass
 
@@ -185,10 +187,19 @@ class PithosMIDB:
         if cls._instance is None:
             instance = super().__new__(cls)
             resolved = Path(lib_path) if lib_path is not None else _find_lib(use_cuda=use_cuda)
-            instance._init_ffi(resolved, use_cuda=use_cuda)
+            if resolved is not None and resolved.exists():
+                instance._init_ffi(resolved, use_cuda=use_cuda)
+                instance._has_native = True
+            else:
+                instance.lib = None
+                instance.isolate = None
+                instance.thread = None
+                instance.use_cuda = False
+                instance._has_native = False
+                log.info("PithosMIDB initialized in fallback mode (native C/C++ library not loaded).")
             cls._instance = instance
         else:
-            if use_cuda and not cls._instance.use_cuda:
+            if use_cuda and getattr(cls._instance, "_has_native", False) and not cls._instance.use_cuda:
                 cls._instance._enable_cuda_dynamically()
         return cls._instance
 
