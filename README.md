@@ -7,9 +7,9 @@ Python library for lunar pit detection, feature extraction, and orbital imagery 
 ## Installation
 
 ```bash
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-pip install -e .
+uv pip install -e ".[dev,dashboard]"
 ```
 
 Requires Python >= 3.10. PyTorch and CUDA dependencies should be pre-installed according to your environment and hardware specifications.

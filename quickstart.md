@@ -4,11 +4,18 @@ This document summarizes the core commands and configurations to run LROC NAC sc
 
 ---
 
-## 1. Environment & Authentication
+## 1. Environment & Setup
 
-Before running any pipeline commands, export your Hugging Face token to enable downloading the DINOv3 LoRA adapters:
+Create the virtual environment using `uv` and install all project dependencies:
 ```bash
-export HF_TOKEN=123
+uv venv .venv
+source .venv/bin/activate
+uv pip install -e ".[dev,dashboard]"
+```
+
+Export your Hugging Face token to enable downloading DINOv3 LoRA model weights:
+```bash
+export HF_TOKEN=your_token
 ```
 
 ---
@@ -67,7 +74,7 @@ tmux new-session -d -s luna_scan "export HF_TOKEN=your_token && export PYTHONUNB
 ### A. Real-Time Log Monitoring
 With output buffering disabled, monitor raw logs in real time:
 ```bash
-tail -f hilbert_scan.log
+tail -f scan.log
 ```
 
 ### B. Managing the tmux Session
