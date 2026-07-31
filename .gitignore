@@ -19,20 +19,27 @@ checkpoints/
 *.lis
 *.prt
 
+# Web UI & Interactive Dashboard Components (Decoupled from core library)
+luna/latent_map/dash_app.py
+luna/latent_map/datashader_server.py
+luna_roi_selector.html
+*.html
+
 # IDE
 .vscode/
 .idea/
 
-# Claude Code
+# Claude Code / Gemini / IDE
 .claude/
 .claude.json
 CLAUDE.md
+.gemini/
 
 # OS
 Thumbs.db
 .DS_Store
 
-# For Test
+# Native Build & System Dependencies
 wrappers.py
 luna_hole_adapter/
 *qdrant*
@@ -42,7 +49,10 @@ temp/
 *.o
 *.cpp
 *.so
+*.so.*
+libcudart.so*
 
-# Logs
+# Logs & Scripts Outputs
 *.log
 *test_output*
+*.sh

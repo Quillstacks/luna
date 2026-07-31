@@ -185,7 +185,8 @@ def parse_args():
 
 def main():
     args = parse_args()
-    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
+    from luna.config import HF_REPO_ID
+    pipeline = LunaPipeline.from_pretrained(HF_REPO_ID)
 
     t0 = time.perf_counter()
     hits = pipeline.scan(args.nac, query_dir=args.query_dir,

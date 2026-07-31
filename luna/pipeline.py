@@ -308,7 +308,7 @@ class LunaPipeline:
         log.info("Encoded %d query anchors, shape %s.", len(paths), stacked.shape)
         return stacked
 
-    def _load_and_encode_pit_queries(self, pits_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _load_and_encode_pit_queries(self, pits_dir: str | Path, base_threshold: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Load all pit patches from directory, encode via DINOv3, and assign family IDs.
         
         Returns
@@ -327,9 +327,12 @@ class LunaPipeline:
         
         # Collect all raw pit images
         pit_images = []
+        from PIL import Image
         for f in pit_files:
             img = np.load(f)
             if img.ndim == 2:
+                if img.shape != (256, 256):
+                    img = np.array(Image.fromarray(img).resize((256, 256), Image.Resampling.BILINEAR))
                 pit_images.append(img)
         
         if not pit_images:
@@ -356,14 +359,16 @@ class LunaPipeline:
         queries = np.concatenate(all_embeddings, axis=0).astype(np.float32)
         num_queries = len(queries)
         
-        # Assign family IDs (0-7) based on deterministic hash of filename
+        import hashlib
         families = np.zeros(num_queries, dtype=np.int32)
         for i, f in enumerate(pit_files):
-            family_id = hash(f.stem) % 8
+            h = int(hashlib.md5(f.stem.encode('utf-8')).hexdigest(), 16)
+            family_id = h % 8
             families[i] = family_id
         
         # Define per-query Hamming thresholds
-        base_threshold = 32
+        if base_threshold is None:
+            base_threshold = getattr(self._config, "pithos_base_threshold", 42)
         thresholds = np.full(num_queries, base_threshold, dtype=np.int32)
         
         # Apply family-based scaling
@@ -371,7 +376,8 @@ class LunaPipeline:
         for i in range(num_queries):
             family_id = families[i]
             count_factor = max(1, 10 - family_counts[family_id] // 4)
-            thresholds[i] = min(63, max(16, base_threshold - count_factor))
+            max_cap = max(63, base_threshold)
+            thresholds[i] = min(max_cap, max(16, base_threshold - count_factor))
         
         if self._device == "mps":
             torch.mps.empty_cache()
@@ -508,8 +514,7 @@ class LunaPipeline:
         accepted: list[tuple[float, float]]    = []
 
         # Sort by voting_mask value (descending) for better hits first
-        sorted_indices = sorted(candidate_indices, key=lambda i: -voting_mask[i])
-
+        sorted_indices = sorted(candidate_indices, key=lambda i: voting_mask[i], reverse=True)
         for idx in sorted_indices:
             meta = metadata[idx]
             cx   = meta.x_offset + meta.width  / 2.0
@@ -537,6 +542,7 @@ class LunaPipeline:
     # ------------------------------------------------------------------
 
     @overload
+    @overload
     def scan(
         self,
         product_ids: str | list[str],
@@ -548,6 +554,7 @@ class LunaPipeline:
         trace: dict = ...,
         metrics: Literal[False] = ...,
         on_progress: Callable[[str, int, int], None] | None = ...,
+        pithos_base_threshold: int | None = ...,
     ) -> list[CandidateHit]: ...
 
     @overload
@@ -562,6 +569,7 @@ class LunaPipeline:
         trace: dict = ...,
         metrics: Literal[True] = ...,
         on_progress: Callable[[str, int, int], None] | None = ...,
+        pithos_base_threshold: int | None = ...,
     ) -> tuple[list[CandidateHit], MetricsReport]: ...
 
     def scan(
@@ -575,6 +583,7 @@ class LunaPipeline:
         trace: dict = None,
         metrics: bool = False,
         on_progress: Callable[[str, int, int], None] | None = None,
+        pithos_base_threshold: int | None = None,
     ) -> list[CandidateHit] | tuple[list[CandidateHit], MetricsReport]:
         # Use config defaults if not provided
         if top_k is None:
@@ -583,6 +592,8 @@ class LunaPipeline:
             search_k = self._config.search_k
         if min_dist_px is None:
             min_dist_px = self._config.min_dist_px
+        if pithos_base_threshold is None:
+            pithos_base_threshold = getattr(self._config, "pithos_base_threshold", 113)
         
         if isinstance(product_ids, str):
             product_ids = [product_ids]
@@ -609,7 +620,7 @@ class LunaPipeline:
                 log.info("Detected pit database with %d entries. Activating Multi-Family Resonant Voting.", len(pit_files))
         
         if use_resonant_voting and self._query_queries is None:
-            self._query_queries, self._query_families, self._query_thresholds = self._load_and_encode_pit_queries(query_dir)
+            self._query_queries, self._query_families, self._query_thresholds = self._load_and_encode_pit_queries(query_dir, base_threshold=pithos_base_threshold)
             query_vecs = self._query_queries
         else:
             if self._query_queries is not None and use_resonant_voting:
@@ -678,7 +689,8 @@ class LunaPipeline:
                 log.error("Skipping %s due to background download error: %s", pid, q_err)
                 continue
 
-            index_prefix = str(index_dir / f"pithos_{pid}")
+            real_pid = nac_path.stem
+            index_prefix = str(index_dir / f"pithos_{real_pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
 
             # 1. Index Ingestion / Loading
@@ -923,6 +935,33 @@ class LunaPipeline:
                 skip_preprocess=True,
                 trace=trace,
                 save_attention_overlay=self._config.save_attention_overlay if hasattr(self._config, 'save_attention_overlay') else False,
+            )
+        elif self._refiner_type == "stage2":
+            from luna.models.stage2_decoder import Stage2Refiner
+            from luna.config import PROJECT_ROOT
+            
+            log.info("Initializing Stage2Refiner stage on %s …", self._device)
+            if on_progress:
+                on_progress("Initializing Stage2Refiner", 0, 1)
+                
+            checkpoint = checkpoint or (PROJECT_ROOT / "data" / "weights" / "stage2_decoder_best.pt")
+            refiner = Stage2Refiner.from_checkpoint(
+                checkpoint_path=checkpoint,
+                dino_encoder=self._encoder,
+                device=self._device
+            )
+            
+            if on_progress:
+                on_progress("Initializing Stage2Refiner", 1, 1)
+                on_progress("Running Stage2 refinement", 0, len(hits))
+                
+            log.info("Passing %d candidates to Stage2 refiner (score_thr=%.2f) …", len(hits), score_thr)
+            refined = refiner.refine(
+                hits=hits,
+                out_dir=output_dir,
+                score_thr=score_thr,
+                save_debug_plots=output_dir is not None,
+                trace=trace,
             )
         else:  # esa (default)
             from luna.models import ESSARefiner

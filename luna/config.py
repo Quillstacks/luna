@@ -12,7 +12,7 @@ from typing import Optional
 
 import numpy as np
 
-log = logging.getLogger("luna.config")
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -30,7 +30,7 @@ WEIGHTS_DIR  = DATA_DIR / "weights"
 # Model
 # ---------------------------------------------------------------------------
 
-HF_REPO_ID   = "F1nnSBK/lunar-dinov3-lora"
+HF_REPO_ID   = os.environ.get("LUNA_HF_REPO_ID", "F1nnSBK/lunar-dinov3-lora")
 DINO_DIM     = 384
 
 # ---------------------------------------------------------------------------
@@ -119,6 +119,7 @@ class LunaConfig:
     # Pithos options
     pithos_use_fp16: bool = False
     pithos_use_cuda: bool = False
+    pithos_base_threshold: int = 113
     
     # Bandwidth limiting for downloads (in MB/s, None = unlimited)
     max_bandwidth_mbps: Optional[float] = None

@@ -23,7 +23,7 @@ from typing import Optional
 
 import requests
 
-log = logging.getLogger("luna.io.kernel_fetch")
+log = logging.getLogger(__name__)
 
 NAIF_BASE = "https://naif.jpl.nasa.gov/pub/naif/pds/data/lro-l-spice-6-v1.0/lrosp_1000"
 DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data" / "spice" / "lro"

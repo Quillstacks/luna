@@ -28,7 +28,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-log = logging.getLogger("luna.io.pds_index")
+log = logging.getLogger(__name__)
 
 DEFAULT_BASE = "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-3-CDR-V1.0"
 EDR_BASE = "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-2-EDR-V1.0"
@@ -138,6 +138,16 @@ class PDSIndex:
 
         self.archive = archive.upper()
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")
+        
+        # Load local geometry cache if it exists
+        self.geom_cache_path = Path(__file__).resolve().parents[2] / "data" / "pds_geometry_cache.json"
+        self._geom_cache = {}
+        if self.geom_cache_path.exists():
+            try:
+                import json
+                self._geom_cache = json.loads(self.geom_cache_path.read_text())
+            except Exception as e:
+                log.warning("Failed to load geometry cache: %s", e)
         
         if base_url is None:
             self.base_url = EDR_BASE if self.archive == "EDR" else DEFAULT_BASE
@@ -305,13 +315,94 @@ class PDSIndex:
         raise KeyError(f"Product {product_id!r} not found in any volume")
 
     def url_for(self, product_id: str) -> str:
+        pid = _normalize_product_id(product_id, self.suffix)
+        if hasattr(self, "_geom_cache") and pid in self._geom_cache and "file_spec_name" in self._geom_cache[pid]:
+            fsn = self._geom_cache[pid]["file_spec_name"]
+            root_marker = f"/LRO-L-LROC-{'2-EDR' if self.archive == 'EDR' else '3-CDR'}-V1.0"
+            return self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
+            
         _, _, fsn, _ = self._lookup(product_id)
         root_marker = f"/LRO-L-LROC-{'2-EDR' if self.archive == 'EDR' else '3-CDR'}-V1.0"
         return self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
 
     def geometry_for(self, product_id: str) -> dict:
+        pid = _normalize_product_id(product_id, self.suffix)
+        if hasattr(self, "_geom_cache") and pid in self._geom_cache:
+            return self._geom_cache[pid]
+            
         _, pid, fsn, rec = self._lookup(product_id)
         geom = self._parse_geometry(rec)
         geom["product_id"] = pid
         geom["file_spec_name"] = fsn
         return geom
+
+    @staticmethod
+    def update_geometry_cache_from_geojson(features: list[dict], archive: str = "CDR") -> None:
+        geom_cache_path = Path(__file__).resolve().parents[2] / "data" / "pds_geometry_cache.json"
+        
+        cache = {}
+        if geom_cache_path.exists():
+            try:
+                import json
+                cache = json.loads(geom_cache_path.read_text())
+            except Exception:
+                pass
+                
+        suffix = {"CDR": "C", "EDR": "E"}.get(archive.upper(), "C")
+        
+        updated = False
+        for feat in features:
+            props = feat.get("properties", {})
+            pid = props.get("label")
+            if not pid:
+                continue
+                
+            norm_pid = _normalize_product_id(pid, suffix)
+            if norm_pid in cache:
+                continue
+                
+            attrs = props.get("attributes", {})
+            coords = feat.get("geometry", {}).get("coordinates", [[]])[0]
+            if len(coords) < 4:
+                continue
+                
+            def norm_lon(lon):
+                return (lon + 180) % 360 - 180
+                
+            ul_lon, ul_lat = norm_lon(coords[0][0]), coords[0][1]
+            ur_lon, ur_lat = norm_lon(coords[1][0]), coords[1][1]
+            lr_lon, lr_lat = norm_lon(coords[2][0]), coords[2][1]
+            ll_lon, ll_lat = norm_lon(coords[3][0]), coords[3][1]
+            
+            c_lat = (ul_lat + lr_lat) / 2.0
+            c_lon = (ul_lon + lr_lon) / 2.0
+            
+            geom = {
+                "product_id": norm_pid,
+                "resolution": attrs.get("Resolution"),
+                "emission_angle": attrs.get("Emission"),
+                "incidence_angle": attrs.get("Incidence"),
+                "phase_angle": attrs.get("Phase"),
+                "sub_solar_latitude": attrs.get("SubSol Lat"),
+                "sub_solar_longitude": attrs.get("SubSol Lon") if attrs.get("SubSol Lon") is None else norm_lon(attrs.get("SubSol Lon")),
+                "sub_spacecraft_latitude": None,
+                "sub_spacecraft_longitude": None,
+                "center_latitude": c_lat,
+                "center_longitude": c_lon,
+                "upper_right_latitude": ur_lat,
+                "upper_right_longitude": ur_lon,
+                "lower_right_latitude": lr_lat,
+                "lower_right_longitude": lr_lon,
+                "lower_left_latitude": ll_lat,
+                "lower_left_longitude": ll_lon,
+                "upper_left_latitude": ul_lat,
+                "upper_left_longitude": ul_lon,
+                "spacecraft_altitude": None,
+            }
+            cache[norm_pid] = geom
+            updated = True
+            
+        if updated:
+            import json
+            geom_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            geom_cache_path.write_text(json.dumps(cache, indent=2))

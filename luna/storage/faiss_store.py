@@ -8,7 +8,7 @@ from luna.screening.protocols import VectorStore, TileMetadata
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-log = logging.getLogger("luna.screening.faiss_store")
+log = logging.getLogger(__name__)
 
 
 class FaissLocalStore(VectorStore):

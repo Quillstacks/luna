@@ -1,4 +1,3 @@
-# luna/screening/candidate_gen.py
 from __future__ import annotations
 
 import logging
@@ -49,15 +48,7 @@ class ScreenerEngine:
         self._alive = False
         self.transformer.stop()
         self.transformer.is_batch_ready = 0
-        # 5 s is plenty on most systems; if the Cython thread is still stuck
-        # in the Apple Silicon busy-spin, __dealloc__ will skip free() safely
-        # thanks to the safe_to_free flag in transformer.pyx.
         self._thread.join(timeout=5.0)
-        if self._thread.is_alive():
-            log.warning(
-                "Transformer thread did not exit within 5 s — "
-                "native buffer dealloc will be skipped (safe via safe_to_free flag)."
-            )
 
     def __del__(self) -> None:
         if getattr(self, "_alive", False):
@@ -112,19 +103,60 @@ class DataIngestor:
         path: Path, img_geometry, lines: int, samples: int
     ) -> Callable[[float, float], tuple[float, float]]:
         from luna.io import pixel_to_lonlat, LinearProjection
-        try:
-            proj = LinearProjection.from_nac_geometry(img_geometry, lines=lines, samples=samples)
-            log.info("Using bilinear projection for %s", path.name)
-            return lambda x, y: pixel_to_lonlat(proj, x, y)
-        except (ValueError, KeyError, TypeError) as e:
-            log.warning("Bilinear projection failed (%s), falling back to SPICE ...", e)
+        from shapely.geometry import shape
+        
+        # 1. Bilinear Projection
+        if img_geometry:
+            try:
+                proj = LinearProjection.from_nac_geometry(img_geometry, lines=lines, samples=samples)
+                log.info("Using bilinear projection for %s", path.name)
+                return lambda x, y: pixel_to_lonlat(proj, x, y)
+            except (ValueError, KeyError, TypeError) as e:
+                log.warning("Bilinear projection failed (%s), falling back to SPICE ...", e)
 
-        from luna.io.spice_project import ensure_kernels_for_label
-        ensure_kernels_for_label(path)
-        coord_fn = DataIngestor._build_spice_coord_fn(path)
-        coord_fn(samples / 2.0, lines / 2.0)
-        log.info("SPICE kernels active for %s", path.name)
-        return coord_fn
+        # 2. SPICE Projection
+        try:
+            from luna.io.spice_project import ensure_kernels_for_label
+            ensure_kernels_for_label(path)
+            coord_fn = DataIngestor._build_spice_coord_fn(path)
+            
+            for sx in [0, samples // 2, samples]:
+                for sy in [0, lines // 2, lines]:
+                    test_lon, test_lat = coord_fn(sx, sy)
+                    if test_lon != 0.0 or test_lat != 0.0:
+                        log.info("SPICE kernels active for %s", path.name)
+                        return coord_fn
+        except Exception as spice_err:
+            log.warning("SPICE initialization failed: %s", spice_err)
+
+        # 3. Robust Envelope Fallback (Catching None/Empty geometries)
+        log.warning("All primary projections failed for %s. Applying robust envelope mapping.", path.name)
+        try:
+            if not img_geometry:
+                min_lon, min_lat, max_lon, max_lat = 0.0, -90.0, 0.0, -75.0
+            elif isinstance(img_geometry, dict):
+                if img_geometry.get("type") is not None:
+                    min_lon, min_lat, max_lon, max_lat = shape(img_geometry).bounds
+                elif "bounds" in img_geometry:
+                    min_lon, min_lat, max_lon, max_lat = img_geometry["bounds"]
+                elif "bbox" in img_geometry:
+                    min_lon, min_lat, max_lon, max_lat = img_geometry["bbox"]
+                else:
+                    min_lon, min_lat, max_lon, max_lat = 0.0, -90.0, 0.0, -75.0
+            else:
+                min_lon, min_lat, max_lon, max_lat = img_geometry.bounds
+
+            min_lon = 0.0 if np.isnan(min_lon) else min_lon
+            max_lon = 0.0 if np.isnan(max_lon) else max_lon
+            min_lat = -90.0 if np.isnan(min_lat) else min_lat
+            max_lat = -90.0 if np.isnan(max_lat) else max_lat
+            
+            return lambda x, y: (
+                min_lon + (x / max(samples, 1)) * (max_lon - min_lon),
+                min_lat + (y / max(lines, 1)) * (max_lat - min_lat)
+            )
+        except Exception as fatal_err:
+            raise ValueError(f"Failed to compile coordinate mappings for {path.name}: {fatal_err}")
 
     def _safe_encode(self, batch: np.ndarray) -> np.ndarray:
         """Encode a batch safely, falling back and halving the batch on GPU/MPS OOM errors."""
@@ -136,7 +168,6 @@ class DataIngestor:
         try:
             return self.model.encode(batch)
         except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-            # Detect CUDA or MPS out-of-memory patterns in the error message
             is_oom = isinstance(e, torch.cuda.OutOfMemoryError) or "out of memory" in str(e).lower() or "oom" in str(e).lower()
             if not is_oom:
                 raise e
@@ -145,13 +176,11 @@ class DataIngestor:
                 log.error("Out of memory encountered even with batch size of 1. Cannot recover.")
                 raise e
 
-            # Clear cache to free up memory before retry
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             elif torch.backends.mps.is_available():
                 torch.mps.empty_cache()
 
-            # Halve the batch size and recursively retry
             half_size = len(batch) // 2
             log.warning("OOM detected during DINO encoding, clearing cache and halving batch of size %d to %d ...", len(batch), half_size)
 
@@ -170,32 +199,38 @@ class DataIngestor:
         lines, samples = img.pixels.shape
         stripe         = self.screener.submit_nac(path, width=samples, height=lines)
 
+        # Build coordinate function once per NAC (bilinear → SPICE → envelope fallback).
+        # Returns (lon, lat) for a given pixel (x, y) center.
+        coord_fn = DataIngestor._build_coord_fn(
+            path, getattr(img, "geometry", None), lines, samples
+        )
+
         total_tiles = (
             ((lines   - tile_size) // stride + 1)
             * ((samples - tile_size) // stride + 1)
         )
         fetched = 0
 
+        half = tile_size / 2.0
         with tqdm(total=total_tiles, desc=f"Ingesting {img.product_id}",
                   unit="tile", dynamic_ncols=True, smoothing=0.0) as pbar:
             while fetched < total_tiles:
                 batch, offsets = self.screener.get_batch()
                 raw_count = len(batch)
 
-                meta_batch = [
-                    TileMetadata(
+                meta_batch = []
+                for x, y in offsets:
+                    lon, lat = coord_fn(float(x) + half, float(y) + half)
+                    meta_batch.append(TileMetadata(
                         product_id = img.product_id,
                         x_offset   = int(x),
                         y_offset   = int(y),
                         width      = tile_size,
                         height     = tile_size,
-                        lon        = 0.0,
-                        lat        = 0.0,
-                    )
-                    for x, y in offsets
-                ]
+                        lon        = lon,
+                        lat        = lat,
+                    ))
 
-                # Filter out completely blank/invalid background tiles (max == 0)
                 valid_indices = [i for i in range(raw_count) if batch[i].max() > 0]
                 if valid_indices:
                     valid_batch = batch[valid_indices]
