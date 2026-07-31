@@ -105,10 +105,10 @@ def main() -> None:
     df_out.to_csv(out_file, index=False)
 
     print("\n=========================================================================")
-    print("✨ Pit Candidate Filter Execution Complete!")
-    print(f"📊 Evaluated Tiles     : {len(bg_vectors)}")
-    print(f"✅ Verified Candidates : {len(df_out)}")
-    print(f"📍 Output CSV Path     : {out_file}")
+    print("Pit Candidate Filter Execution Complete!")
+    print(f"Evaluated Tiles     : {len(bg_vectors)}")
+    print(f"Verified Candidates : {len(df_out)}")
+    print(f"Output CSV Path     : {out_file}")
     print("=========================================================================\n")
 
 

@@ -21,12 +21,12 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 
 def main():
     if not BACKUP_FILE.exists():
-        print(f"❌ Error: Backup file not found at {BACKUP_FILE}")
+        print(f"Error: Backup file not found at {BACKUP_FILE}")
         sys.exit(1)
 
     file_size_gb = BACKUP_FILE.stat().st_size / (1024**3)
-    print(f"🔐 Initializing private Hugging Face upload for target repository '{REPO_ID}'...")
-    print(f"🚀 Uploading First Full Scan Archive '{BACKUP_FILE.name}' ({file_size_gb:.2f} GB) to {REPO_ID}...")
+    print(f"Initializing private Hugging Face upload for target repository '{REPO_ID}'...")
+    print(f"Uploading First Full Scan Archive '{BACKUP_FILE.name}' ({file_size_gb:.2f} GB) to {REPO_ID}...")
 
     api = HfApi(token=HF_TOKEN)
 
@@ -47,12 +47,12 @@ def main():
     )
 
     print("\n========================================================")
-    print("🎉 SUCCESSFUL PRIVATE UPLOAD OF FIRST FULL SCAN TO HUGGING FACE!")
+    print("SUCCESSFUL PRIVATE UPLOAD OF FIRST FULL SCAN TO HUGGING FACE!")
     print("========================================================")
-    print(f"🔒 Visibility:   100% PRIVATE")
-    print(f"📌 Repository:   {REPO_ID}")
-    print(f"📁 Archived:     indices_old (26,056 NACs FP16) + full_scan.log")
-    print(f"🔗 Private Link: https://huggingface.co/datasets/{REPO_ID}")
+    print(f"Visibility:   100% PRIVATE")
+    print(f"Repository:   {REPO_ID}")
+    print(f"Archived:     indices_old (26,056 NACs FP16) + full_scan.log")
+    print(f"Private Link: https://huggingface.co/datasets/{REPO_ID}")
     print("========================================================")
 
 

@@ -64,7 +64,7 @@ def main() -> None:
         batch_size=512,
     )
 
-    log.info("✨ Parametric UMAP Model Training Complete! (Final Loss: %.6f)", loss)
+    log.info("Parametric UMAP Model Training Complete! (Final Loss: %.6f)", loss)
 
 
 if __name__ == "__main__":

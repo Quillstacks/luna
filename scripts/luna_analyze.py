@@ -600,7 +600,7 @@ def analyze_log(log_path: Path) -> None:
         print(c(f"[ERROR] {data['error']}", ANSI_RED))
         sys.exit(1)
 
-    # 1. 📊 SYSTEM STATUS & PIPELINE CONFIGURATION CARD
+    # 1. SYSTEM STATUS & PIPELINE CONFIGURATION CARD
     print(c("┌────────────────────────────────────────────────────────────────────────────┐", ANSI_CYAN))
     print(c("│ " + "LUNA PIPELINE STATUS & DIAGNOSTICS".center(74) + " │", ANSI_BOLD + ANSI_CYAN))
     print(c("├────────────────────────────────────────────────────────────────────────────┤", ANSI_CYAN))
@@ -611,11 +611,11 @@ def analyze_log(log_path: Path) -> None:
     print(c("└────────────────────────────────────────────────────────────────────────────┘", ANSI_CYAN))
     print()
 
-    # 2. 🌍 PROGRESS GLOBE
+    # 2. PROGRESS GLOBE
     if data['is_global_scan']:
         print_moon_globe(data)
 
-    # 3. 📋 LATITUDE BAND REGISTRY TABLE
+    # 3. LATITUDE BAND REGISTRY TABLE
     print(c("┌──────┬────────────────────────┬─────────┬──────────┬────────────────┬────────────┬──────────────┐", ANSI_CYAN))
     print(c("│ Band │     Latitude Range     │  NACs   │ Coverage │ Pipeline Time  │  Progress  │    Status    │", ANSI_BOLD + ANSI_CYAN))
     print(c("├──────┼────────────────────────┼─────────┼──────────┼────────────────┼────────────┼──────────────┤", ANSI_CYAN))
@@ -637,7 +637,7 @@ def analyze_log(log_path: Path) -> None:
     print(c("└──────┴────────────────────────┴─────────┴──────────┴────────────────┴────────────┴──────────────┘", ANSI_CYAN))
     print()
 
-    # 4. ⏱️ PROGRESS SUMMARY & PROJECTIONS CARD
+    # 4. PROGRESS SUMMARY & PROJECTIONS CARD
     print(c("┌────────────────────────────────────────────────────────────────────────────┐", ANSI_CYAN))
     print(c("│ " + "PROGRESS SUMMARY & PROJECTIONS".center(74) + " │", ANSI_BOLD + ANSI_CYAN))
     print(c("├────────────────────────────────────────────────────────────────────────────┤", ANSI_CYAN))

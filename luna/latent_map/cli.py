@@ -55,10 +55,10 @@ def main() -> None:
     )
 
     print("\n=========================================================================")
-    print(f"✨ Latent Space Dashboard generated successfully!")
-    print(f"📍 Dashboard HTML Path : {html_path}")
-    print(f"📊 Pit Anchors Mapped  : {len(anchor_info)}")
-    print(f"🌑 Background Samples  : {len(bg_metadata)}")
+    print(f"Latent Space Dashboard generated successfully!")
+    print(f"Dashboard HTML Path : {html_path}")
+    print(f"Pit Anchors Mapped  : {len(anchor_info)}")
+    print(f"Background Samples  : {len(bg_metadata)}")
     print("=========================================================================\n")
 
 

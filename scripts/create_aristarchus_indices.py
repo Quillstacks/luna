@@ -56,7 +56,7 @@ def main():
             device=device,
             config=None  # Standard Konfiguration
         )
-        log.info("✅ Pipeline geladen")
+        log.info("Pipeline geladen")
     except Exception as e:
         log.error(f"Fehler beim Laden der Pipeline: {e}")
         return 1
@@ -89,7 +89,7 @@ def main():
             store, metadata = pipeline._ingest(nac_path)
             
             ingest_time = time.time() - start_time
-            log.info(f"  ✅ Ingestion abgeschlossen in {ingest_time:.1f}s")
+            log.info(f"  Ingestion abgeschlossen in {ingest_time:.1f}s")
             log.info(f"     Erstellte {len(metadata)} Tile-Embeddings")
             
             # Schritt 2: Index speichern
@@ -97,7 +97,7 @@ def main():
             index_path = pipeline._save_index(store, nac_path)
             
             save_time = time.time() - start_time
-            log.info(f"  ✅ Index gespeichert in {save_time:.1f}s")
+            log.info(f"  Index gespeichert in {save_time:.1f}s")
             log.info(f"     Index-Pfad: {index_path}")
             
             # Speicher nach jedem NAC bereinigen
@@ -110,7 +110,7 @@ def main():
             gc.collect()
             
         except Exception as e:
-            log.error(f"  ❌ Fehler bei {nac_id}: {e}")
+            log.error(f"  Fehler bei {nac_id}: {e}")
             import traceback
             traceback.print_exc()
             continue
@@ -122,9 +122,9 @@ def main():
     for nac_id in nac_ids:
         index_files = list(INDEX_DIR.glob(f"pithos_{nac_id}*"))
         if index_files:
-            log.info(f"  ✅ {nac_id}: {len(index_files)} Dateien")
+            log.info(f"  {nac_id}: {len(index_files)} Dateien")
         else:
-            log.info(f"  ❌ {nac_id}: Keine Index-Dateien gefunden")
+            log.info(f"  {nac_id}: Keine Index-Dateien gefunden")
     
     return 0
 

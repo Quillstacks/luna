@@ -143,7 +143,7 @@ def build_cache(sample_size: int = 5000, out_cache_path: str = "data/_scratch/da
     with open(out_file, "wb") as f:
         pickle.dump(cache_data, f)
 
-    log.info("✨ Pre-computed cache successfully written → %s (Size: %.2f MB)", out_file, out_file.stat().st_size / (1024*1024))
+    log.info("Pre-computed cache successfully written -> %s (Size: %.2f MB)", out_file, out_file.stat().st_size / (1024*1024))
 
 
 if __name__ == "__main__":

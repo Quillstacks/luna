@@ -20,25 +20,25 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 
 def main():
     if not BACKUP_FILE.exists():
-        print(f"❌ Error: Backup file not found at {BACKUP_FILE}")
+        print(f"Error: Backup file not found at {BACKUP_FILE}")
         sys.exit(1)
 
-    print(f"🔐 Initializing private Hugging Face upload for target repository '{REPO_ID}'...")
+    print(f"Initializing private Hugging Face upload for target repository '{REPO_ID}'...")
     api = HfApi(token=HF_TOKEN)
 
     # 1. Create/Ensure PRIVATE Dataset Repository
-    print(f"📦 Ensuring private repository '{REPO_ID}' exists...")
+    print(f"Ensuring private repository '{REPO_ID}' exists...")
     repo_url = api.create_repo(
         repo_id=REPO_ID,
         repo_type="dataset",
         private=True,
         exist_ok=True
     )
-    print(f"🔒 Repository URL (PRIVATE): {repo_url}")
+    print(f"Repository URL (PRIVATE): {repo_url}")
 
     # 2. Upload file to private repo
     file_size_mb = BACKUP_FILE.stat().st_size / (1024**2)
-    print(f"🚀 Uploading '{BACKUP_FILE.name}' ({file_size_mb:.2f} MB) to private Hugging Face repo...")
+    print(f"Uploading '{BACKUP_FILE.name}' ({file_size_mb:.2f} MB) to private Hugging Face repo...")
     
     api.upload_file(
         path_or_fileobj=str(BACKUP_FILE),
@@ -48,11 +48,11 @@ def main():
     )
 
     print("\n========================================================")
-    print("🎉 SUCCESSFUL PRIVATE UPLOAD TO HUGGING FACE!")
+    print("SUCCESSFUL PRIVATE UPLOAD TO HUGGING FACE!")
     print("========================================================")
-    print(f"🔒 Visibility:   100% PRIVATE")
-    print(f"📌 Repository:   {REPO_ID}")
-    print(f"🔗 Private Link: https://huggingface.co/datasets/{REPO_ID}")
+    print(f"Visibility:   100% PRIVATE")
+    print(f"Repository:   {REPO_ID}")
+    print(f"Private Link: https://huggingface.co/datasets/{REPO_ID}")
     print("========================================================")
 
 

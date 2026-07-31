@@ -18,5 +18,5 @@ sys.path.insert(0, str(ROOT))
 from luna.latent_map.dash_app import app
 
 if __name__ == "__main__":
-    print("🚀 Launching LUNA Latent Space Modern Dash Dashboard on http://0.0.0.0:8050 ...")
+    print("Launching LUNA Latent Space Modern Dash Dashboard on http://0.0.0.0:8050 ...")
     app.run(host="0.0.0.0", port=8050, debug=False)

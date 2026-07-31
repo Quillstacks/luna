@@ -110,7 +110,7 @@ def run_stage1_search(pipeline, nac_ids, query_path, search_k=200):
         )
         
         search_time = time.time() - start_time
-        log.info(f"  ✅ Suche abgeschlossen in {search_time:.1f}s")
+        log.info(f"  Suche abgeschlossen in {search_time:.1f}s")
         log.info(f"     Gesamt Kandidaten: {len(hits)}")
         
         # Analysiere Kandidaten
@@ -120,7 +120,7 @@ def run_stage1_search(pipeline, nac_ids, query_path, search_k=200):
             log.info(f"     Durchschnittlicher Score: {np.mean(scores):.2f}")
         
     except Exception as e:
-        log.error(f"  ❌ Fehler bei Suche: {e}")
+        log.error(f"  Fehler bei Suche: {e}")
         import traceback
         traceback.print_exc()
         return [], lpa_catalog
@@ -194,14 +194,14 @@ def run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50):
             )
             
             if best_pit:
-                log.info(f"\n  ✅ {refined.product_id} Rank {refined.rank}:")
+                log.info(f"\n  {refined.product_id} Rank {refined.rank}:")
                 log.info(f"     Stage-1: lat={refined.lat:.4f}, lon={refined.lon:.4f}")
                 log.info(f"     Stage-2: lat={refined.essa_lat:.4f}, lon={refined.essa_lon:.4f}")
                 log.info(f"     Stage-1 vs Stage-2 Distanz: {stage1_dist:.1f}m")
                 log.info(f"     Nächster LPA-Pit: {best_pit['name']} (Distanz: {best_dist:.1f}m)")
                 log.info(f"     Score: {refined.dino_score:.3f}, ESSA Score: {refined.essa_score:.3f}")
             else:
-                log.info(f"\n  ⚠️  {refined.product_id} Rank {refined.rank}:")
+                log.info(f"\n  {refined.product_id} Rank {refined.rank}:")
                 log.info(f"     Stage-1: lat={refined.lat:.4f}, lon={refined.lon:.4f}")
                 log.info(f"     Stage-2: lat={refined.essa_lat:.4f}, lon={refined.essa_lon:.4f}")
                 log.info(f"     Kein LPA-Pit in der Nähe gefunden")
@@ -250,7 +250,7 @@ def main():
             device=device,
             config=None
         )
-        log.info("✅ Pipeline geladen")
+        log.info("Pipeline geladen")
         
         # Führe Stage-1 Suche durch
         hits, lpa_catalog = run_stage1_search(pipeline, nac_ids, query_path)
@@ -288,16 +288,16 @@ def main():
             base_weights_path=HF_REPO_ID,
             device=device
         )
-        log.info("✅ DINO Encoder geladen")
+        log.info("DINO Encoder geladen")
         
         # Lade Stage-2 Decoder mit den neuen Fixes
         log.info("Lade Stage-2 Decoder...")
         decoder = build_stage2_decoder(device=device)
-        log.info("✅ Stage-2 Decoder geladen")
+        log.info("Stage-2 Decoder geladen")
         
         # Erstelle Refiner
         refiner = Stage2Refiner(decoder=decoder, dino_encoder=encoder)
-        log.info("✅ Refiner erstellt")
+        log.info("Refiner erstellt")
         
         # Führe Stage-2 Test durch
         refined_hits = run_stage2_test(refiner, hits, lpa_catalog, out_dir, max_candidates=50)
