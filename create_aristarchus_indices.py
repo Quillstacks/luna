@@ -49,11 +49,10 @@ def main():
     # NACs die wir indexieren wollen
     nac_ids = ["M109548636RC", "M109548636LC"]
     
-    # Lade Pipeline (ohne loRA für Indexierung - spart RAM)
-    log.info("Lade DINOv3 Encoder...")
+    from luna.config import HF_REPO_ID
     try:
         pipeline = LunaPipeline.from_pretrained(
-            "F1nnSBK/lunar-dinov3-lora",
+            HF_REPO_ID,
             device=device,
             config=None  # Standard Konfiguration
         )

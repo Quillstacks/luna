@@ -30,7 +30,8 @@ catalog_pit_tiles = {
 }
 
 def main():
-    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
+    from luna.config import HF_REPO_ID
+    pipeline = LunaPipeline.from_pretrained(HF_REPO_ID)
     pid = "M1129801944RC"
     index_prefix = f"data/_scratch/indices/pithos_{pid}"
     

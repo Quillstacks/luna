@@ -47,7 +47,7 @@ This calculates coverage, estimates download sizes, and prompts for confirmation
 ### C. Persistent Background Scan (via tmux)
 For large-scale regions (e.g. running overnight). This continues running even if the SSH/IDE connection drops and utilizes automatic file cleanup (saving disk space while preserving raw imagery for the top 10 detections):
 ```bash
-tmux new-session -d -s luna_scan "export HF_TOKEN=123 && export PYTHONUNBUFFERED=1 && /home/spark-f165/hertsch/luna/.venv/bin/python -u fun_with_luna.py --roi '<PASTED_COORDINATES>' -y --cleanup --refiner dino >> hilbert_scan.log 2>&1"
+tmux new-session -d -s luna_scan "export HF_TOKEN=your_token && export PYTHONUNBUFFERED=1 && ./.venv/bin/python -u fun_with_luna.py --roi '<PASTED_COORDINATES>' -y --cleanup --refiner dino >> scan.log 2>&1"
 ```
 
 ---

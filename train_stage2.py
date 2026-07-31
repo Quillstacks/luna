@@ -156,11 +156,11 @@ def main() -> int:
     print(f"Loading decoder baseline from {baseline_weights}...")
     decoder = build_stage2_decoder(checkpoint_path=baseline_weights, device=args.device)
     
-    # 2. Extract DINOv3 backbone features & generate targets
+    from luna.config import HF_REPO_ID
     print("Initializing frozen DINOv3 encoder for feature extraction...")
     encoder = DINOEncoder(
-        lora_dir="F1nnSBK/lunar-dinov3-lora",
-        base_weights_path="F1nnSBK/lunar-dinov3-lora",
+        lora_dir=HF_REPO_ID,
+        base_weights_path=HF_REPO_ID,
         device=args.device
     )
 

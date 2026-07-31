@@ -5,6 +5,7 @@ hardcoding values at call sites.
 """
 
 from __future__ import annotations
+import os
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ WEIGHTS_DIR  = DATA_DIR / "weights"
 # Model
 # ---------------------------------------------------------------------------
 
-HF_REPO_ID   = os.environ.get("LUNA_HF_REPO_ID", "F1nnSBK/lunar-dinov3-lora")
+HF_REPO_ID   = os.environ.get("LUNA_HF_REPO_ID", "luna/lunar-dinov3-lora")
 DINO_DIM     = 384
 
 # ---------------------------------------------------------------------------

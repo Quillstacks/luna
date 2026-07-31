@@ -3,7 +3,7 @@
 upload_first_scan_to_hf.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 Uploads the First Full Scan archive (indices_old + full_scan.log) 
-to the private Hugging Face dataset repository 'F1nnSBK/luna-paper-backup-private'.
+to a private Hugging Face dataset repository.
 """
 
 import os
@@ -14,8 +14,8 @@ from huggingface_hub import HfApi
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-BACKUP_FILE = Path.home() / "hertsch" / "backup" / "luna_first_full_scan_20260731.tar.gz"
-REPO_ID = "F1nnSBK/luna-paper-backup-private"
+BACKUP_FILE = Path(os.environ.get("LUNA_BACKUP_FILE", Path.home() / "backup" / "luna_first_full_scan_20260731.tar.gz"))
+REPO_ID = os.environ.get("LUNA_HF_BACKUP_REPO", "luna/luna-paper-backup-private")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 
@@ -25,7 +25,7 @@ def main():
         sys.exit(1)
 
     file_size_gb = BACKUP_FILE.stat().st_size / (1024**3)
-    print(f"🔐 Initializing private Hugging Face upload for account 'F1nnSBK'...")
+    print(f"🔐 Initializing private Hugging Face upload for target repository '{REPO_ID}'...")
     print(f"🚀 Uploading First Full Scan Archive '{BACKUP_FILE.name}' ({file_size_gb:.2f} GB) to {REPO_ID}...")
 
     api = HfApi(token=HF_TOKEN)
@@ -49,7 +49,7 @@ def main():
     print("\n========================================================")
     print("🎉 SUCCESSFUL PRIVATE UPLOAD OF FIRST FULL SCAN TO HUGGING FACE!")
     print("========================================================")
-    print(f"🔒 Visibility:   100% PRIVATE (Only F1nnSBK has access)")
+    print(f"🔒 Visibility:   100% PRIVATE")
     print(f"📌 Repository:   {REPO_ID}")
     print(f"📁 Archived:     indices_old (26,056 NACs FP16) + full_scan.log")
     print(f"🔗 Private Link: https://huggingface.co/datasets/{REPO_ID}")

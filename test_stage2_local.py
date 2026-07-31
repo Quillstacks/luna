@@ -122,14 +122,15 @@ def main():
     
     # Initialize DINOv3 encoder (uses FP16 on MPS/CUDA)
     print("Initializing DINOv3 encoder...")
+    from luna.config import HF_REPO_ID
     try:
         encoder = DINOEncoder(
-            lora_dir="F1nnSBK/lunar-dinov3-lora",
-            base_weights_path="F1nnSBK/lunar-dinov3-lora",
+            lora_dir=HF_REPO_ID,
+            base_weights_path=HF_REPO_ID,
             matryoshka_dim=384,
             device=device,
         )
-        print("  DINOv3 encoder initialized with F1nnSBK/lunar-dinov3-lora")
+        print(f"  DINOv3 encoder initialized with {HF_REPO_ID}")
     except Exception as e:
         print(f"  WARNING: Could not initialize DINOv3 encoder: {e}")
         print("  Using dummy tokens for Stage-2 test")

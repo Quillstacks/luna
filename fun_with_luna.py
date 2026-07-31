@@ -18,7 +18,7 @@ from rich.table import Table
 from rich.text import Text
 
 from luna import LunaPipeline
-from luna.config import MAX_BATCH_SIZE, TILE_SIZE, STRIDE, LunaConfig
+from luna.config import MAX_BATCH_SIZE, TILE_SIZE, STRIDE, LunaConfig, HF_REPO_ID
 
 console = Console(width=120)
 
@@ -222,7 +222,7 @@ def execute_parallel_worker(pid: str, args_dict: dict) -> Tuple[str, List[Any], 
                 # Mute sys.stderr during load to swallow the "Using cache found in..." PyTorch Hub spam
                 with open(os.devnull, "w") as fnull:
                     with contextlib.redirect_stderr(fnull):
-                        pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora", refiner=active_refiner, config=config)
+                        pipeline = LunaPipeline.from_pretrained(HF_REPO_ID, refiner=active_refiner, config=config)
                 
                 # Phase 1 Ingestion & Vector Mapping
                 hits = pipeline.scan(
@@ -396,7 +396,7 @@ def main() -> None:
             max_bandwidth_mbps=args.max_bandwidth,
         )
         active_refiner = None if args.refiner == "none" else args.refiner
-        pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora", refiner=active_refiner, config=config)
+        pipeline = LunaPipeline.from_pretrained(HF_REPO_ID, refiner=active_refiner, config=config)
         
         start_scan = time.perf_counter()
         trace_data = {} if args.trace else None

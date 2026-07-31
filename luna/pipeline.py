@@ -4,7 +4,7 @@ Typical usage::
 
     from luna import LunaPipeline
 
-    pipeline = LunaPipeline.from_pretrained("F1nnSBK/lunar-dinov3-lora")
+    pipeline = LunaPipeline.from_pretrained("luna/lunar-dinov3-lora")
     hits = pipeline.scan("M1343438359LC", query_dir="data/_scratch/pits/")
 """
 

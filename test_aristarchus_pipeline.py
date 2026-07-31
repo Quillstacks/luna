@@ -243,10 +243,10 @@ def main():
     log.info("=" * 60)
     
     try:
-        # Lade Pipeline
+        from luna.config import HF_REPO_ID
         log.info("Lade LunaPipeline...")
         pipeline = LunaPipeline.from_pretrained(
-            "F1nnSBK/lunar-dinov3-lora",
+            HF_REPO_ID,
             device=device,
             config=None
         )
@@ -284,8 +284,8 @@ def main():
         # Lade DINO Encoder für Stage-2
         log.info("Lade DINO Encoder für Stage-2...")
         encoder = DINOEncoder(
-            lora_dir="F1nnSBK/lunar-dinov3-lora",
-            base_weights_path="F1nnSBK/lunar-dinov3-lora",
+            lora_dir=HF_REPO_ID,
+            base_weights_path=HF_REPO_ID,
             device=device
         )
         log.info("✅ DINO Encoder geladen")

@@ -13,8 +13,8 @@ from huggingface_hub import HfApi
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-BACKUP_FILE = Path.home() / "hertsch" / "backup" / "luna_paper_ready_backup_20260731.tar.gz"
-REPO_ID = "F1nnSBK/luna-paper-backup-private"
+BACKUP_FILE = Path(os.environ.get("LUNA_BACKUP_FILE", Path.home() / "backup" / "luna_paper_ready_backup_20260731.tar.gz"))
+REPO_ID = os.environ.get("LUNA_HF_BACKUP_REPO", "luna/luna-paper-backup-private")
 HF_TOKEN = os.environ.get("HF_TOKEN")
 
 
@@ -23,7 +23,7 @@ def main():
         print(f"❌ Error: Backup file not found at {BACKUP_FILE}")
         sys.exit(1)
 
-    print(f"🔐 Initializing private Hugging Face upload for account 'F1nnSBK'...")
+    print(f"🔐 Initializing private Hugging Face upload for target repository '{REPO_ID}'...")
     api = HfApi(token=HF_TOKEN)
 
     # 1. Create/Ensure PRIVATE Dataset Repository
@@ -50,7 +50,7 @@ def main():
     print("\n========================================================")
     print("🎉 SUCCESSFUL PRIVATE UPLOAD TO HUGGING FACE!")
     print("========================================================")
-    print(f"🔒 Visibility:   100% PRIVATE (Only F1nnSBK has access)")
+    print(f"🔒 Visibility:   100% PRIVATE")
     print(f"📌 Repository:   {REPO_ID}")
     print(f"🔗 Private Link: https://huggingface.co/datasets/{REPO_ID}")
     print("========================================================")
