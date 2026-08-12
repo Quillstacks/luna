@@ -67,3 +67,4 @@ data/_scratch/
 !docs/examples/
 !third_party/**/*.jpg
 !third_party/**/*.png
+.agents/
