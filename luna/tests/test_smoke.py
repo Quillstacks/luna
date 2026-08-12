@@ -43,11 +43,14 @@ def test_pithos_binarize():
 
 def test_delta_roundtrip():
     """create_delta_buffer -> insert -> delta_size -> backup -> restore."""
+    import pytest
     from luna.screening.pithos import PithosMIDB
     import numpy as np
     import tempfile
     
     db = PithosMIDB()
+    if not getattr(db, "_has_native", False):
+        pytest.skip("Pithos native shared library (libpithos) is not available.")
     index_name = "test_delta_roundtrip"
     capacity = 100
     

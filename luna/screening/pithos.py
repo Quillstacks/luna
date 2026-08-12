@@ -245,6 +245,11 @@ class PithosMIDB:
 
         log.info("Pithos isolate initialized successfully.")
 
+    def _check_native(self) -> None:
+        """Ensure native C/C++ library is loaded before calling FFI functions."""
+        if not getattr(self, "_has_native", False) or self.lib is None:
+            raise RuntimeError("Pithos native library (libpithos) is not loaded or available.")
+
     def _enable_cuda_dynamically(self) -> None:
         """Attempt to enable CUDA runtime dynamically on an active isolate thread."""
         if getattr(self, "_has_cuda_api", False) and not self.use_cuda:
@@ -661,6 +666,7 @@ class PithosMIDB:
 
     def create_delta_buffer(self, index_name: str, capacity: int) -> None:
         """Create an in-memory delta buffer for the named index."""
+        self._check_native()
         with _suppress_stderr():
             status = self.lib.vdb_create_delta_buffer(
                 self.thread, index_name.encode(), ctypes.c_int(capacity)
@@ -670,6 +676,7 @@ class PithosMIDB:
 
     def insert(self, index_name: str, id: int, vector: np.ndarray) -> None:
         """Insert a float32 vector into the delta buffer for the named index."""
+        self._check_native()
         vec_c = np.ascontiguousarray(vector, dtype=np.float32)
         with _suppress_stderr():
             status = self.lib.vdb_insert(
@@ -683,6 +690,7 @@ class PithosMIDB:
 
     def delete_from_delta(self, index_name: str, id: int) -> None:
         """Delete an entry from the delta buffer for the named index."""
+        self._check_native()
         with _suppress_stderr():
             status = self.lib.vdb_delete_from_delta(
                 self.thread, index_name.encode(), ctypes.c_longlong(id)
@@ -692,11 +700,13 @@ class PithosMIDB:
 
     def delta_size(self, index_name: str) -> int:
         """Return the number of entries in the delta buffer for the named index."""
+        self._check_native()
         with _suppress_stderr():
             return int(self.lib.vdb_delta_size(self.thread, index_name.encode()))
 
     def needs_flush(self, index_name: str) -> bool:
         """Check if the delta buffer for the named index needs to be flushed."""
+        self._check_native()
         with _suppress_stderr():
             return bool(self.lib.vdb_needs_flush(self.thread, index_name.encode()))
 
@@ -704,6 +714,7 @@ class PithosMIDB:
         self, index_name: str, queries: np.ndarray, k: int
     ) -> Tuple[np.ndarray, np.ndarray]:
         """KNN search over main index + delta buffer together."""
+        self._check_native()
         n = queries.shape[0]
         queries_c = np.ascontiguousarray(queries, dtype=np.float32)
         out_ids = np.empty(n * k, dtype=np.int64)
@@ -726,6 +737,7 @@ class PithosMIDB:
 
     def backup_delta(self, index_name: str, path: str | Path) -> None:
         """Backup the delta buffer to disk."""
+        self._check_native()
         path_b = str(path).encode()
         with _suppress_stderr():
             status = self.lib.vdb_backup_delta(
@@ -738,6 +750,7 @@ class PithosMIDB:
         self, index_name: str, path: str | Path, capacity: int
     ) -> None:
         """Restore a delta buffer from disk."""
+        self._check_native()
         path_b = str(path).encode()
         with _suppress_stderr():
             status = self.lib.vdb_restore_delta(
