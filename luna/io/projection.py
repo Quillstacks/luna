@@ -88,6 +88,9 @@ class LinearProjection:
         if np.isnan(lon_c).any() or np.isnan(lat_c).any():
             raise ValueError("NaN values found in corner coordinates.")
 
+        # Ensure lon_corners are continuous across 0/360 if spanning the meridian
+        lon_c = lon_c[0] + (lon_c - lon_c[0] + 180.0) % 360.0 - 180.0
+
         uv_c = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float64)
         ll_c = np.stack([lon_c, lat_c], axis=1)
         
@@ -98,6 +101,10 @@ class LinearProjection:
             samples=W, lines=H,
             _affine_fwd=fwd_affine, _affine_inv=inv_affine,
         )
+
+    @property
+    def mean_lon(self) -> float:
+        return float(np.mean(self.lon_corners))
 
     def _bilinear_ll(self, u: float, v: float) -> tuple[float, float]:
         w = np.array([(1 - u) * (1 - v), u * (1 - v), (1 - u) * v, u * v])
@@ -111,11 +118,13 @@ class LinearProjection:
         return np.array([[dlon_du, dlon_dv], [dlat_du, dlat_dv]])
 
     def _solve_uv(self, lon: float, lat: float, tol: float = 1e-9, max_iter: int = 20) -> tuple[float, float]:
-        uv = self._affine_fwd @ np.array([lon, lat, 1.0])
+        mean_lon = self.mean_lon
+        eff_lon = mean_lon + (lon - mean_lon + 180.0) % 360.0 - 180.0
+        uv = self._affine_fwd @ np.array([eff_lon, lat, 1.0])
         u, v = float(uv[0]), float(uv[1])
         for _ in range(max_iter):
             lon_k, lat_k = self._bilinear_ll(u, v)
-            r = np.array([lon - lon_k, lat - lat_k])
+            r = np.array([eff_lon - lon_k, lat - lat_k])
             if np.max(np.abs(r)) < tol:
                 return u, v
             J = self._jacobian(u, v)
