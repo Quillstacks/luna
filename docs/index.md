@@ -22,31 +22,31 @@
 
 ```mermaid
 flowchart TD
-    subgraph Data Layer
-        PDS[NASA PDS Archive] -->|HTTP Range Reads| PDSIndex[luna.io.PDSIndex]
-        PDSIndex -->|On-Demand CDR/EDR| Reader[luna.io.read_nac]
-        NAIF[NASA NAIF SPICE] -->|Targeted Fetch| Kernels[luna.io.kernel_fetch]
+    subgraph Data["Data Layer"]
+        PDS["NASA PDS Archive"] -->|HTTP Range Reads| PDSIndex["luna.io.PDSIndex"]
+        PDSIndex -->|On-Demand CDR/EDR| Reader["luna.io.read_nac"]
+        NAIF["NASA NAIF SPICE"] -->|Targeted Fetch| Kernels["luna.io.kernel_fetch"]
     end
 
-    subgraph Photogrammetry & Projection
-        Kernels --> SPICE[luna.io.spice_project]
-        Reader --> Proj[luna.io.LinearProjection]
-        SPICE -->|Ray-surface intersection with alt_m| CoordMap[(Sample, Line) <--> (Lon, Lat)]
+    subgraph Photogrammetry["Photogrammetry & Projection"]
+        Kernels --> SPICE["luna.io.spice_project"]
+        Reader --> Proj["luna.io.LinearProjection"]
+        SPICE -->|Ray-surface intersection with alt_m| CoordMap["(Sample, Line) ⟷ (Lon, Lat)"]
         Proj -->|Bilinear Newton Solver| CoordMap
     end
 
-    subgraph ML & Screening Pipeline
-        Reader --> RingBuffer[Lock-Free Disruptor Ring]
-        RingBuffer --> DINO[DINOv3 Feature Encoder]
-        DINO --> Pithos[Native Pithos Binary Index]
-        Pithos --> NMS[Spatial 512px NMS Filtering]
-        NMS --> Candidates[Lunar Pit Candidates]
+    subgraph Pipeline["ML & Screening Pipeline"]
+        Reader --> RingBuffer["Lock-Free Disruptor Ring"]
+        RingBuffer --> DINO["DINOv3 Feature Encoder"]
+        DINO --> Pithos["Native Pithos Binary Index"]
+        Pithos --> NMS["Spatial 512px NMS Filtering"]
+        NMS --> Candidates["Lunar Pit Candidates"]
     end
 
-    subgraph Evaluation & Latent Analysis
-        Candidates --> Stage2[Stage-2 Dense Prediction Decoder]
-        Candidates --> LatentMap[UMAP Latent Space & Topology]
-        Stage2 --> VerifiedPits[Verified Morphological Detections]
+    subgraph Evaluation["Evaluation & Latent Analysis"]
+        Candidates --> Stage2["Stage-2 Dense Prediction Decoder"]
+        Candidates --> LatentMap["UMAP Latent Space & Topology"]
+        Stage2 --> VerifiedPits["Verified Morphological Detections"]
     end
 ```
 
