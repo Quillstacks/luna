@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -127,9 +128,10 @@ class PDSIndex:
             })
             retries = Retry(
                 total=5, 
-                backoff_factor=1, 
-                status_forcelist=[500, 502, 503, 504],
+                backoff_factor=0.5, 
+                status_forcelist=[429, 500, 502, 503, 504],
                 allowed_methods=["GET", "HEAD"],
+                respect_retry_after_header=False,
                 raise_on_status=False
             )
             adapter = HTTPAdapter(max_retries=retries)
@@ -183,10 +185,17 @@ class PDSIndex:
     def _read_record(self, url: str, row: int, record_bytes: int) -> str:
         start = row * record_bytes
         end = start + record_bytes - 1
-        r = self.session.get(url, headers={"Range": f"bytes={start}-{end}"}, timeout=30)
-        if r.status_code not in (200, 206):
+        for attempt in range(5):
+            r = self.session.get(url, headers={"Range": f"bytes={start}-{end}"}, timeout=20)
+            if r.status_code in (200, 206):
+                return r.content.decode("ascii", errors="replace")
+            if r.status_code == 429:
+                sleep_s = 1.0 * (2 ** attempt)
+                log.debug("HTTP 429 on index read %s, retrying in %.1fs...", url, sleep_s)
+                time.sleep(sleep_s)
+                continue
             raise IndexError(f"HTTP {r.status_code} on range read {url}")
-        return r.content.decode("ascii", errors="replace")
+        raise IndexError(f"HTTP 429 on range read {url} after 5 retries")
 
     def _characterize_volume(self, volume_id: str) -> VolumeInfo:
         index_url = f"{self.base_url}/{volume_id}/INDEX/INDEX.TAB"
