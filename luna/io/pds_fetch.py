@@ -30,6 +30,13 @@ DEFAULT_USER_AGENT = os.getenv(
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 )
 
+DEFAULT_HEADERS = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://data.lroc.im-ldi.com/",
+}
+
 _index: Optional[PDSIndex] = None
 _session: Optional[requests.Session] = None
 
@@ -39,11 +46,13 @@ def get_pds_session(user_agent: Optional[str] = None) -> requests.Session:
     global _session
     if user_agent is not None:
         s = requests.Session()
-        s.headers.update({"User-Agent": user_agent})
+        headers = dict(DEFAULT_HEADERS)
+        headers["User-Agent"] = user_agent
+        s.headers.update(headers)
         return s
     if _session is None:
         _session = requests.Session()
-        _session.headers.update({"User-Agent": DEFAULT_USER_AGENT})
+        _session.headers.update(DEFAULT_HEADERS)
     return _session
 
 
