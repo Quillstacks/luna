@@ -6,7 +6,7 @@ All notable changes to the `luna` library are documented in this file.
 
 ## [Unreleased] — 2026-08-14
 
-### 🚀 Photogrammetry & SPICE Architecture Overhaul
+### Photogrammetry & SPICE Architecture Overhaul
 
 #### 1. Targeted On-Demand SPICE Kernel Loading
 * **Problem**: When processing multi-year LROC NAC images, loading all `.bc` attitude kernels simultaneously into CSPICE exceeded the internal Double Precision Array File (DAF) handle table limit, triggering:
@@ -31,7 +31,7 @@ All notable changes to the `luna` library are documented in this file.
 
 ---
 
-### 📚 Documentation & Developer Experience
+### Documentation & Developer Experience
 
 * **MkDocs Material Documentation System**:
   - Full technical documentation site configured with Dark/Light mode, syntax highlighting, search, and navigation.
