@@ -91,18 +91,22 @@ def fetch_nac(
     url: Optional[str] = None,
     force: bool = False,
     retries: int = 3,
-    backoff_s: float = 4.0,
+    backoff_s: float = 2.0,
     max_bandwidth_mbps: Optional[float] = None,
+    chunk_size: int = 1 << 20,
+    timeout: tuple[float, float] | float = (10.0, 30.0),
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
+
+    Streams the file to a temporary `.IMG.tmp` file and executes an atomic rename
+    upon completion to ensure corrupted partial files are never left on disk.
 
     If ``url`` is given, it is used verbatim (preferred for reproducibility).
     Otherwise PDSIndex resolves the product ID to its archive URL.
     Skips download if the file already exists unless ``force`` is True.
 
     Retries on transient network errors (``ConnectionError``, ``Timeout``,
-    ``ChunkedEncodingError``) with exponential backoff; partial files are
-    discarded between attempts.
+    ``ChunkedEncodingError``) with exponential backoff.
     
     Args:
         product_id: LROC NAC product ID to download.
@@ -115,6 +119,8 @@ def fetch_nac(
             IMPORTANT: This is Megabytes, NOT Megabits! If None, no limit is applied.
             If specified, download speed will be capped at this rate to prevent network
             saturation. Example: 10 = 10 MB/s = 80 Mbps.
+        chunk_size: Streaming buffer size in bytes (default: 1MB / 1 << 20).
+        timeout: Socket (connect, read) timeout in seconds.
     
     Returns:
         Path to the downloaded .IMG file.
@@ -126,6 +132,7 @@ def fetch_nac(
     dest_dir.mkdir(parents=True, exist_ok=True)
     pid = _normalize_product_id(product_id)
     out = dest_dir / f"{pid}.IMG"
+    temp_out = dest_dir / f"{pid}.IMG.tmp"
     if out.exists() and not force:
         return out
 
@@ -144,13 +151,17 @@ def fetch_nac(
     last_err: Optional[Exception] = None
     for attempt in range(1, retries + 1):
         try:
-            with requests.get(resolved, stream=True, timeout=120) as r:
+            with requests.get(resolved, stream=True, timeout=timeout) as r:
                 r.raise_for_status()
                 total = int(r.headers.get("Content-Length", 0))
-                with open(out, "wb") as f, tqdm(
-                    total=total, unit="B", unit_scale=True, desc=pid
+                with open(temp_out, "wb") as f, tqdm(
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    desc=pid,
+                    mininterval=0.2,
                 ) as bar:
-                    for chunk in r.iter_content(chunk_size=1 << 16):
+                    for chunk in r.iter_content(chunk_size=chunk_size):
                         # Apply bandwidth limiting
                         if bandwidth_limiter.max_bytes_per_second is not None:
                             wait_time = bandwidth_limiter.acquire(len(chunk))
@@ -159,10 +170,11 @@ def fetch_nac(
                         
                         f.write(chunk)
                         bar.update(len(chunk))
+            temp_out.replace(out)
             return out
         except transient as e:
             last_err = e
-            out.unlink(missing_ok=True)
+            temp_out.unlink(missing_ok=True)
             if attempt == retries:
                 break
             wait = backoff_s * (2 ** (attempt - 1))
