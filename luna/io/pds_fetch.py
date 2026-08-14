@@ -25,7 +25,26 @@ from .pds_index import PDSIndex, _normalize_product_id
 
 log = logging.getLogger(__name__)
 
+DEFAULT_USER_AGENT = os.getenv(
+    "LUNA_USER_AGENT",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+)
+
 _index: Optional[PDSIndex] = None
+_session: Optional[requests.Session] = None
+
+
+def get_pds_session(user_agent: Optional[str] = None) -> requests.Session:
+    """Creates or returns a configured requests.Session with proper User-Agent and connection pooling."""
+    global _session
+    if user_agent is not None:
+        s = requests.Session()
+        s.headers.update({"User-Agent": user_agent})
+        return s
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({"User-Agent": DEFAULT_USER_AGENT})
+    return _session
 
 
 def _shared_index() -> PDSIndex:
@@ -95,6 +114,8 @@ def fetch_nac(
     chunk_size: int = 1 << 20,
     timeout: tuple[float, float] | float = (10.0, 30.0),
     max_bandwidth_mbps: Optional[float] = None,
+    session: Optional[requests.Session] = None,
+    user_agent: Optional[str] = None,
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
 
@@ -123,6 +144,8 @@ def fetch_nac(
             IMPORTANT: This is Megabytes, NOT Megabits! If None, no limit is applied.
             If specified, download speed will be capped at this rate to prevent network
             saturation. Example: 10 = 10 MB/s = 80 Mbps.
+        session: Optional pre-configured requests.Session (defaults to get_pds_session()).
+        user_agent: Optional custom User-Agent string.
     
     Returns:
         Path to the downloaded .IMG file.
@@ -140,6 +163,7 @@ def fetch_nac(
         return out
 
     resolved = url or _shared_index().url_for(product_id)
+    http_session = session or get_pds_session(user_agent)
     
     # Initialize bandwidth limiter if limit is specified
     bandwidth_limiter = BandwidthLimiter(
@@ -155,8 +179,8 @@ def fetch_nac(
     last_err: Optional[Exception] = None
     for attempt in range(1, retries + 1):
         try:
-            # Differentiated timeout (connect_timeout, read_timeout) prevents hanging sockets
-            with requests.get(resolved, stream=True, timeout=timeout) as r:
+            # Differentiated timeout (connect_timeout, read_timeout) with configured session
+            with http_session.get(resolved, stream=True, timeout=timeout) as r:
                 r.raise_for_status()
                 total = int(r.headers.get("Content-Length", 0))
                 with open(temp_out, "wb") as f, tqdm(
