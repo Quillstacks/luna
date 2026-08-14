@@ -32,25 +32,36 @@ source .venv/bin/activate  # macOS / Linux
 
 Install `luna` in editable mode with optional extras:
 
-=== "Core + Development + Docs"
+=== "Core Photogrammetry Only"
 
     ```bash
-    uv pip install -e ".[dev,docs,dashboard]"
+    pip install luna
     ```
 
-=== "Production / Minimal"
+=== "Machine Learning & Vision Models"
 
     ```bash
-    uv pip install -e "."
+    pip install "luna[ml]"
     ```
 
-### Optional Dependency Groups
+=== "Full Research Installation"
+
+    ```bash
+    pip install "luna[all,dev,docs]"
+    ```
+
+### Modular Dependency Groups
 
 | Extra Group | Included Packages | Purpose |
 | :--- | :--- | :--- |
-| `dev` | `pytest`, `pydeps`, `vulture` | Unit testing and dead code analysis |
-| `docs` | `mkdocs-material`, `mkdocstrings[python]`, `ruff` | Documentation building & local preview |
-| `dashboard` | `dash`, `datashader` | Interactive latent space visualizers |
+| `ml` | `torch`, `torchvision`, `transformers`, `peft`, `pycocotools` | DINOv3 Vision Transformers, LoRA weights, Stage-2 decoders |
+| `geo` | `shapely`, `pyproj`, `rasterio` | Geospatial polygon clipping, raster reprojection |
+| `analysis` | `umap-learn`, `scikit-learn`, `numba`, `matplotlib` | Parametric UMAP projections, manifold topology |
+| `screening` | `psutil` | High-throughput candidate ring-buffer screening |
+| `dashboard` | `dash`, `datashader`, `pandas` | Interactive latent space web dashboard |
+| `all` | All optional packages bundled | Full monolithic installation |
+| `dev` | `pytest`, `pytest-cov`, `ruff`, `mypy` | Unit testing, coverage, linting & type checks |
+| `docs` | `mkdocs-material`, `mkdocstrings[python]` | Documentation building & local preview |
 
 ### Vector Index Backend (`pithosdb`)
 

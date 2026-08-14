@@ -1,5 +1,6 @@
 # LUNA
 
+> **L.U.N.A.** — *Lots of Unexplained NAC Anomalies*  
 > Python library for lunar planetary photogrammetry, NASA PDS data access, and vision model inference on Lunar Reconnaissance Orbiter Camera (LROC) NAC imagery.
 
 `luna` provides standalone photogrammetry without requiring external USGS ISIS3 dependencies, resilient on-demand NASA Planetary Data System (PDS) downloads, DINOv3 feature representations, and candidate screening engines.

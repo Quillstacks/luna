@@ -136,6 +136,7 @@ def fetch_nac(
     url: Optional[str] = None,
     force: bool = False,
     retries: int = 3,
+    backoff_s: float = 2.0,
     chunk_size: int = 1 << 20,
     timeout: tuple[float, float] | float = (10.0, 30.0),
     max_bandwidth_mbps: Optional[float] = None,
