@@ -1,6 +1,6 @@
 from .kernel_fetch import ensure_kernels_for_date
 from .nac_reader import NACImage, read_nac, get_nacs_from_polygon
-from .pds_fetch import fetch_nac
+from .pds_fetch import fetch_nac, get_pds_session, DEFAULT_USER_AGENT
 from .pds_index import PDSIndex
 from .projection import LinearProjection, lonlat_to_pixel, pixel_to_lonlat, get_image_of_roi
 from .spice_project import (
@@ -18,6 +18,8 @@ __all__ = [
     "read_nac",
     "get_nacs_from_polygon",
     "fetch_nac",
+    "get_pds_session",
+    "DEFAULT_USER_AGENT",
     "PDSIndex",
     "LinearProjection",
     "lonlat_to_pixel",

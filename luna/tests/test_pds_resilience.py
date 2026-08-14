@@ -55,8 +55,39 @@ def test_pds_fetch_retry_on_http_error(tmp_path: Path):
     mock_fail_cm = MagicMock()
     mock_fail_cm.__enter__.side_effect = http_err
 
-    with patch("requests.get", side_effect=[mock_fail_cm, mock_response_ok]), \
-         patch("time.sleep"):
-        out_path = fetch_nac("M126710873RE", dest_dir=tmp_path, url="https://example.com/M126710873RE.IMG", retries=3)
+    mock_session = MagicMock()
+    mock_session.get.side_effect = [mock_fail_cm, mock_response_ok]
+
+    with patch("time.sleep"):
+        out_path = fetch_nac(
+            "M126710873RE",
+            dest_dir=tmp_path,
+            url="https://example.com/M126710873RE.IMG",
+            retries=3,
+            session=mock_session,
+        )
         assert out_path.exists()
         assert out_path.read_bytes() == b"MOCK_IMG_DATA"
+        assert mock_session.get.call_count == 2
+
+
+def test_get_pds_session():
+    """Test get_pds_session configuration and custom user agent."""
+    from luna.io.pds_fetch import get_pds_session, DEFAULT_USER_AGENT
+
+    session_default = get_pds_session()
+    assert session_default.headers.get("User-Agent") == DEFAULT_USER_AGENT
+
+    custom_agent = "CustomLunaAgent/2.0"
+    session_custom = get_pds_session(user_agent=custom_agent)
+    assert session_custom.headers.get("User-Agent") == custom_agent
+
+
+def test_pds_io_exports():
+    """Test that session and fetch helpers are cleanly exported in luna.io."""
+    import luna.io as lio
+
+    assert hasattr(lio, "fetch_nac")
+    assert hasattr(lio, "get_pds_session")
+    assert hasattr(lio, "DEFAULT_USER_AGENT")
+    assert hasattr(lio, "PDSIndex")
