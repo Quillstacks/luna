@@ -49,8 +49,16 @@ Install `luna` in editable mode with optional extras:
 | Extra Group | Included Packages | Purpose |
 | :--- | :--- | :--- |
 | `dev` | `pytest`, `pydeps`, `vulture` | Unit testing and dead code analysis |
-| `docs` | `mkdocs-material`, `mkdocstrings[python]` | Documentation building & local preview |
+| `docs` | `mkdocs-material`, `mkdocstrings[python]`, `ruff` | Documentation building & local preview |
 | `dashboard` | `dash`, `datashader` | Interactive latent space visualizers |
+
+### Vector Index Backend (`pithosdb`)
+
+For fast binary embedding indexing, install the standalone Pithos engine:
+
+```bash
+pip install pithosdb
+```
 
 ---
 

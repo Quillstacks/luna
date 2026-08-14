@@ -100,7 +100,7 @@ nav:
       - SPICE & Photogrammetry: guide/spice-and-photogrammetry.md
       - PDS Data & Ingestion: guide/pds-and-io.md
       - Vision Models & Encoders: guide/vision-and-models.md
-      - Screening & Pithos Engine: guide/screening-and-pithos.md
+      - Screening & Streaming Engine: guide/screening-and-pithos.md
       - Latent Mapping & Manifolds: guide/latent-mapping.md
   - Tutorials & Operations:
       - End-to-End Pit Detection: tutorials/pit-detection-pipeline.md
