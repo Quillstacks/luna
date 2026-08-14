@@ -280,6 +280,8 @@ def ground_to_image(
     label_path = Path(label_path)
     lbl = pvl.load(str(label_path))
     start_dt = lbl["START_TIME"].replace(tzinfo=None)
+    from .kernel_fetch import ensure_kernels_for_date
+    ensure_kernels_for_date(start_dt, root=kernel_root)
     furnish_kernels_for_date(start_dt, kernel_root)
 
     pid = str(lbl["PRODUCT_ID"])
