@@ -1,20 +1,20 @@
 # LUNA
 
 > **L.U.N.A.** — *Lots of Unexplained NAC Anomalies*  
-> High-performance Python framework for lunar pit detection, SPICE photogrammetry & orbital vision on NASA LROC NAC imagery.
+> Python library for lunar pit detection, SPICE photogrammetry, and orbital imagery analysis on NASA LROC NAC products.
 
 ---
 
 ## Key Features
 
-- **Pure-Python SPICE Photogrammetry (`luna.io`)**: Full pushbroom camera model reproducing USGS CSM and ISIS `campt` ray-tracing at sub-pixel accuracy directly in Python without external Docker/ISIS runtimes.
-- **Robust SPICE Pool Management**: On-demand dynamic kernel loading (`furnish_kernels_for_date`) preventing CSPICE DAF-handle table exhaustion across multi-year mission phases.
-- **Topography & Elevation Correction**: Precise parallax compensation using LOLA lunar elevations (`alt_m` via planetocentric `sp.latrec`).
-- **Ascending & Descending Orbit Support**: Automatic flight-direction detection and bilinear corner-mapping in `LinearProjection`.
-- **Deep Vision Models (`luna.models`)**: Multi-scale feature extraction with DINOv3 Vision Transformers, Stage-2 dense decoders, and boundary refinement.
-- **High-Throughput Screening (`luna.screening`)**: Lock-free Disruptor ring-buffer pipeline paired with native C++ `Pithos` binary embedding index for sub-second candidate retrieval.
-- **Latent Manifold Analysis (`luna.latent_map`)**: Parametric UMAP projections, Riemannian metric estimations, and topology inspection of lunar morphology.
-- **Zero-Latency PDS Resolution**: Range-request binary search over fixed-width PDS3 `INDEX.TAB` archives for instant image retrieval.
+- **SPICE Photogrammetry (`luna.io`)**: Pushbroom camera model implementing ground-to-image and image-to-ground ray-tracing directly in Python via `spiceypy`.
+- **Targeted SPICE Pool Management**: On-demand kernel loading (`furnish_kernels_for_date`) to prevent CSPICE DAF-handle table exhaustion across multi-year missions.
+- **Topography & Elevation Correction**: Parallax compensation using LOLA lunar elevations (`alt_m` via planetocentric `sp.latrec`).
+- **Ascending & Descending Orbit Support**: Automatic flight-direction detection and corner-mapping in `LinearProjection`.
+- **Vision Models (`luna.models`)**: Feature extraction with DINOv3 Vision Transformers, Stage-2 decoders, and boundary refiners.
+- **Screening Pipeline (`luna.screening`)**: Disruptor ring-buffer paired with native C++ `Pithos` binary embedding search for candidate retrieval.
+- **Latent Manifold Analysis (`luna.latent_map`)**: UMAP projections, metric estimations, and topology inspection of lunar terrain.
+- **PDS Resolution**: Binary search index lookup over fixed-width PDS3 `INDEX.TAB` archives via HTTP range requests.
 
 ---
 

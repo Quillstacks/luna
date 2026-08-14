@@ -59,7 +59,7 @@ print(f"Tile shape: {tile.shape}, mean I/F: {tile.mean():.4f}")
 
 ---
 
-## 3. High-Throughput Candidate Screening
+## 3. Candidate Screening Pipeline
 
 Screen entire orbital strips using the `LunaPipeline`:
 

@@ -1,6 +1,6 @@
 # Screening & Pithos Engine
 
-Processing global LROC NAC coverage requires evaluating $> 80,000$ images (each $\sim 5000 \times 52000$ pixels, $> 500\text{ MB}$). `luna.screening` implements a zero-copy, lock-free streaming architecture capable of screening an entire NAC in **$< 15\text{ seconds}$**.
+`luna.screening` implements a streaming architecture to parallelize tile extraction and search across large LROC NAC images ($\sim 5000 \times 52000$ pixels).
 
 ---
 

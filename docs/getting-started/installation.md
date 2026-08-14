@@ -1,6 +1,6 @@
 # Installation & Environment Setup
 
-This guide walks through setting up `luna` for local development, high-performance model training, and SPICE-based orbital photogrammetry.
+This guide walks through setting up `luna` for local development, model training, and SPICE-based orbital photogrammetry.
 
 ---
 

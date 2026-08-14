@@ -1,6 +1,6 @@
 # PDS Data Ingestion & I/O
 
-`luna.io` provides high-throughput, low-latency tools for indexing, downloading, and decoding LROC NAC products directly from the NASA Planetary Data System (PDS) archive.
+`luna.io` provides tools for indexing, downloading, and decoding LROC NAC products directly from the NASA Planetary Data System (PDS) archive.
 
 ---
 
