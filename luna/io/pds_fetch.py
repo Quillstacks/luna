@@ -91,7 +91,9 @@ def fetch_nac(
     url: Optional[str] = None,
     force: bool = False,
     retries: int = 3,
-    backoff_s: float = 4.0,
+    backoff_s: float = 2.0,
+    chunk_size: int = 1 << 20,
+    timeout: tuple[float, float] | float = (10.0, 30.0),
     max_bandwidth_mbps: Optional[float] = None,
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
@@ -100,9 +102,12 @@ def fetch_nac(
     Otherwise PDSIndex resolves the product ID to its archive URL.
     Skips download if the file already exists unless ``force`` is True.
 
+    Downloads to a temporary ``.IMG.tmp`` file and atomically renames it
+    upon successful completion to prevent corrupted or partial files on disk.
+
     Retries on transient network errors (``ConnectionError``, ``Timeout``,
-    ``ChunkedEncodingError``) with exponential backoff; partial files are
-    discarded between attempts.
+    ``ChunkedEncodingError``) with exponential backoff; partial temporary files
+    are discarded between attempts.
     
     Args:
         product_id: LROC NAC product ID to download.
@@ -111,6 +116,9 @@ def fetch_nac(
         force: If True, re-download even if file exists.
         retries: Number of retry attempts on network errors.
         backoff_s: Base backoff time in seconds for retries.
+        chunk_size: Stream buffer chunk size in bytes (default: 1 MB / 1<<20).
+        timeout: Socket timeout configuration; tuple of (connect_timeout, read_timeout)
+            or single float in seconds.
         max_bandwidth_mbps: Optional bandwidth limit in MB/s (Megabytes per second).
             IMPORTANT: This is Megabytes, NOT Megabits! If None, no limit is applied.
             If specified, download speed will be capped at this rate to prevent network
@@ -126,6 +134,8 @@ def fetch_nac(
     dest_dir.mkdir(parents=True, exist_ok=True)
     pid = _normalize_product_id(product_id)
     out = dest_dir / f"{pid}.IMG"
+    temp_out = dest_dir / f"{pid}.IMG.tmp"
+
     if out.exists() and not force:
         return out
 
@@ -144,13 +154,18 @@ def fetch_nac(
     last_err: Optional[Exception] = None
     for attempt in range(1, retries + 1):
         try:
-            with requests.get(resolved, stream=True, timeout=120) as r:
+            # Differentiated timeout (connect_timeout, read_timeout) prevents hanging sockets
+            with requests.get(resolved, stream=True, timeout=timeout) as r:
                 r.raise_for_status()
                 total = int(r.headers.get("Content-Length", 0))
-                with open(out, "wb") as f, tqdm(
-                    total=total, unit="B", unit_scale=True, desc=pid
+                with open(temp_out, "wb") as f, tqdm(
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    desc=pid,
+                    mininterval=0.2,  # Throttle console redraws to save CPU cycles
                 ) as bar:
-                    for chunk in r.iter_content(chunk_size=1 << 16):
+                    for chunk in r.iter_content(chunk_size=chunk_size):
                         # Apply bandwidth limiting
                         if bandwidth_limiter.max_bytes_per_second is not None:
                             wait_time = bandwidth_limiter.acquire(len(chunk))
@@ -159,10 +174,13 @@ def fetch_nac(
                         
                         f.write(chunk)
                         bar.update(len(chunk))
+
+            # Atomic rename once download is completely validated
+            temp_out.replace(out)
             return out
         except transient as e:
             last_err = e
-            out.unlink(missing_ok=True)
+            temp_out.unlink(missing_ok=True)
             if attempt == retries:
                 break
             wait = backoff_s * (2 ** (attempt - 1))
@@ -170,3 +188,4 @@ def fetch_nac(
                         pid, attempt, retries, e, wait)
             time.sleep(wait)
     raise NACNotFoundError(f"fetch_nac({pid}) failed after {retries} attempts: {last_err}")
+
