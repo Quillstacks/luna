@@ -8,13 +8,13 @@
 
 ```mermaid
 flowchart LR
-    Raw["Raw NAC Sub-Tile 256x256"] --> DINO["DINOv3 ViT Backbone"]
-    DINO --> Embedding["384-d Latent Feature Vector"]
-    Embedding --> Binarize["PolarQuant-Hadamard Binarization"]
-    Binarize --> PithosIndex["Pithos SIMD Binary Search"]
-    PithosIndex --> Candidate["Candidate Region + NMS"]
-    Candidate --> Stage2["Stage-2 Dense Decoder & Physics Validator"]
-    Stage2 --> Output["Validated Pit Polygon, Depth & Confidence"]
+    Raw["Raw NAC Sub-Tile 256x256"] --> DINO["DINOv3 ViT-S/16 Backbone"]
+    DINO --> Embedding["384-d Matryoshka Vector"]
+    Embedding --> Binarize["PolarQuant-Hadamard Transform"]
+    Binarize --> PithosIndex["pithosdb SIMD Search"]
+    PithosIndex --> Candidate["CandidateHit (Lunar NMS)"]
+    Candidate --> Stage2["Stage-2 Decoder & PhysicsValidator"]
+    Stage2 --> Output["RefinedHit (Polygon, Depth, Confidence)"]
 ```
 
 ---

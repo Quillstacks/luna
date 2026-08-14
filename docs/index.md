@@ -22,31 +22,34 @@
 
 ```mermaid
 flowchart TD
-    subgraph Data["Data Layer"]
-        PDS["NASA PDS Archive"] -->|HTTP Range Reads| PDSIndex["luna.io.PDSIndex"]
-        PDSIndex -->|On-Demand CDR/EDR| Reader["luna.io.read_nac"]
-        NAIF["NASA NAIF SPICE"] -->|Targeted Fetch| Kernels["luna.io.kernel_fetch"]
+    subgraph Data["1. Data Ingestion Layer"]
+        PDS["NASA PDS Archive"] -->|HTTP Range Lookup| PDSIndex["luna.io.PDSIndex"]
+        PDSIndex -->|Archive URL| Fetch["luna.io.fetch_nac"]
+        Fetch -->|1MB Chunk Stream| Reader["luna.io.read_nac"]
+        NAIF["NASA NAIF Archive"] -->|Targeted SPICE Fetch| Kernels["luna.io.kernel_fetch"]
     end
 
-    subgraph Photogrammetry["Photogrammetry & Projection"]
-        Kernels --> SPICE["luna.io.spice_project"]
-        Reader --> Proj["luna.io.LinearProjection"]
-        SPICE -->|Ray-surface intersection with alt_m| CoordMap["(Sample, Line) ⟷ (Lon, Lat)"]
+    subgraph Photogrammetry["2. Photogrammetry & Projection"]
+        Kernels -->|On-Demand Kernels| SPICE["luna.io.spice_project"]
+        Reader -->|Timing & Corners| Proj["luna.io.LinearProjection"]
+        SPICE -->|1D Bisection Raytrace + alt_m| CoordMap["Exact Ground Mapping (Sample, Line) ⟷ (Lon, Lat)"]
         Proj -->|Bilinear Newton Solver| CoordMap
     end
 
-    subgraph Pipeline["ML & Screening Pipeline"]
-        Reader --> RingBuffer["Lock-Free Disruptor Ring"]
-        RingBuffer --> DINO["DINOv3 Feature Encoder"]
-        DINO --> Pithos["pithosdb Vector Index"]
-        Pithos --> NMS["Spatial Lunar NMS Filtering"]
-        NMS --> Candidates["Lunar Pit Candidates"]
+    subgraph Pipeline["3. Screening & Streaming Engine"]
+        Reader --> RingBuffer["luna.screening.engine.DisruptorEngine"]
+        RingBuffer --> Transformer["luna.screening.engine.NACTransformer"]
+        Transformer -->|Batched 256x256 Float32| DINO["luna.models.DINOEncoder (ViT-S/16)"]
+        DINO -->|384-d Matryoshka Vectors| Pithos["pithosdb (PithosStore Binary Index)"]
+        Pithos -->|Resonant Template Voting| NMS["luna.pipeline.apply_lunar_spatial_nms"]
+        NMS -->|Filtered Bounding Boxes| Candidates["CandidateHit Stream"]
     end
 
-    subgraph Evaluation["Evaluation & Latent Analysis"]
-        Candidates --> Stage2["Stage-2 Dense Prediction Decoder"]
-        Candidates --> LatentMap["UMAP Latent Space & Topology"]
-        Stage2 --> VerifiedPits["Verified Morphological Detections"]
+    subgraph Evaluation["4. Refinement & Latent Topology"]
+        Candidates --> Stage2["luna.models.Stage2DenseDecoder & PhysicsValidator"]
+        Candidates --> LatentMap["luna.latent_map.PitTopologyAnalyzer"]
+        Stage2 -->|Validated Polygons & Depth| VerifiedPits["RefinedHit Output"]
+        LatentMap -->|Parametric UMAP & Manifold Math| ManifoldView["2D/3D Morphological Manifold"]
     end
 ```
 
