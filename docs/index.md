@@ -85,3 +85,12 @@ print(f"Target pixel coordinate: Sample = {sample_px:.2f}, Line = {line_px:.2f}"
 - [**Vision & Models Guide**](guide/vision-and-models.md): DINOv3 feature backbones and Stage-2 decoders.
 - [**Screening & Streaming Guide**](guide/screening-and-pithos.md): Multi-scale binary indexing and ring-buffer streaming.
 - [**API Reference**](reference/io.md): Comprehensive module and class documentation.
+
+---
+
+## Research Group & Maintainers
+
+`luna` is developed and maintained by the **[Moonatics](https://github.com/moonatics)** research group:
+
+- [`@F1nnSBK`](https://github.com/F1nnSBK)
+- [`@schutera`](https://github.com/schutera)
