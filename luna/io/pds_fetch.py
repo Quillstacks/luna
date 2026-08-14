@@ -136,7 +136,6 @@ def fetch_nac(
     url: Optional[str] = None,
     force: bool = False,
     retries: int = 3,
-    backoff_s: float = 2.0,
     chunk_size: int = 1 << 20,
     timeout: tuple[float, float] | float = (10.0, 30.0),
     max_bandwidth_mbps: Optional[float] = None,
@@ -144,6 +143,9 @@ def fetch_nac(
     user_agent: Optional[str] = None,
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
+
+    Streams the file to a temporary `.IMG.tmp` file and executes an atomic rename
+    upon completion to ensure corrupted partial files are never left on disk.
 
     If ``url`` is given, it is used verbatim (preferred for reproducibility).
     Otherwise PDSIndex resolves the product ID to its archive URL.
@@ -239,4 +241,3 @@ def fetch_nac(
                         pid, attempt, retries, e, wait)
             time.sleep(wait)
     raise NACNotFoundError(f"fetch_nac({pid}) failed after {retries} attempts: {last_err}")
-

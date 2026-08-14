@@ -39,6 +39,23 @@ DEFAULT_WEIGHTS = WEIGHTS_DIR / "essa.pt"
 
 @dataclass(frozen=True)
 class RefinedHit:
+    """Detection result after Stage-2 verification and geometric refinement.
+
+    Attributes:
+        rank: Detection ranking (1-indexed, ordered by confidence score).
+        product_id: LROC NAC product ID where candidate was detected.
+        votes: Number of query votes or detector consensus count.
+        dino_score: Initial Stage-1 screening similarity score.
+        lon: Planetocentric longitude in degrees (0–360).
+        lat: Planetocentric latitude in degrees (-90 to +90).
+        x_offset: Sample pixel offset within the full NAC strip.
+        y_offset: Line pixel offset within the full NAC strip.
+        essa_score: Secondary Stage-2 Mask R-CNN confidence score.
+        essa_class: Predicted morphological class (``"pit"`` or ``"skylight"``).
+        essa_lon: Refined sub-pixel longitude coordinate.
+        essa_lat: Refined sub-pixel latitude coordinate.
+        dino_similarity: Cosine similarity to reference pit anchor embeddings.
+    """
     rank: int
     product_id: str
     votes: int
@@ -72,7 +89,8 @@ class RefinedHit:
             ])
         if self.dino_similarity > 0:
             rows.append(f"<tr><td>DINO Similarity</td><td>{self.dino_similarity:.2f}</td></tr>")
-        return f"<table><tr><th colspan='2' style='text-align:left'>RefinedHit</th></tr>{" ".join(rows)}</table>"
+        body = " ".join(rows)
+        return f"<table><tr><th colspan='2' style='text-align:left'>RefinedHit</th></tr>{body}</table>"
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +98,7 @@ class RefinedHit:
 # ---------------------------------------------------------------------------
 
 class ESSARefiner:
+    """Stage-2 Mask R-CNN detector verifying candidates on map-projected EDR tiles."""
     def __init__(self, model: torch.nn.Module, device: str) -> None:
         self._model  = model.eval()
         self._device = device
@@ -90,6 +109,7 @@ class ESSARefiner:
         checkpoint: str | Path = DEFAULT_WEIGHTS,
         device: str | None = None,
     ) -> ESSARefiner:
+        """Instantiate ESSARefiner from a pre-trained PyTorch checkpoint."""
         if device is None:
             device = (
                 "mps"  if torch.backends.mps.is_available() else
@@ -102,7 +122,7 @@ class ESSARefiner:
 
     @staticmethod
     def _cdr_to_edr_pid(cdr_pid: str) -> str:
-        """Convert CDR product ID to EDR: trailing C → E (LC→LE, RC→RE)."""
+        """Convert CDR product ID to EDR: trailing C to E (LC to LE, RC to RE)."""
         return cdr_pid[:-1] + "E" if cdr_pid.endswith("C") else cdr_pid
 
     def refine(

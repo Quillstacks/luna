@@ -288,10 +288,29 @@ def select_coverage_nacs(
 ) -> list[str]:
     """Select a minimal, realistic covering set of LROC NAC images for an ROI.
 
-    ``band_label`` (e.g. "-80,-50") is purely cosmetic: it prefixes every log
-    line so that when several bands run concurrently via
-    :func:`run_bands_parallel`, interleaved log output from different
-    processes can still be told apart.
+    Uses a lazy-greedy maximum marginal gain algorithm over Shapely polygon footprints
+    harvested from QuickMap COGNAC16, with STRtree spatial indexing, progressive
+    incidence angle relaxation fallback passes, and geometric polygon simplification.
+
+    Args:
+        roi_coords: List of ``(lon, lat)`` coordinate tuples defining a closed lunar polygon (degrees).
+        max_resolution: Maximum allowable ground resolution in meters per pixel (default 1.5 m/px).
+        min_incidence: Minimum solar incidence angle in degrees (default 30.0°).
+        max_incidence: Maximum primary solar incidence angle in degrees (default 60.0°).
+        min_overlap_ratio: Stop criterion for uncovered residual area ratio (default 0.01 = 99% coverage).
+        band_label: Optional cosmetic tag for logging parallel mosaic batches.
+
+    Returns:
+        List of selected LROC NAC product IDs providing contiguous coverage.
+
+    Raises:
+        ValueError: If fewer than 3 coordinates are provided.
+
+    Example:
+        >>> from luna.io.coverage import select_coverage_nacs
+        >>> roi = [(303.0, 14.0), (303.5, 14.0), (303.5, 14.5), (303.0, 14.5)]
+        >>> pids = select_coverage_nacs(roi, max_resolution=1.2)
+        >>> print(f"Selected {len(pids)} NAC frames")
     """
     if len(roi_coords) < 3:
         raise ValueError("ROI requires at least 3 points defining a closed polygon.")

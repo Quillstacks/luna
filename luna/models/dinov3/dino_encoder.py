@@ -12,9 +12,18 @@ log = logging.getLogger(__name__)
 
 
 class DINOEncoder:
-    """
-    DINOv3 (vits16) wrapper with LVD pretrain weights and optional LoRA adapters.
-    Compatible with the EmbeddingModel protocol for CandidateScreener.
+    """DINOv3 ViT backbone wrapper with lunar pretrain weights and LoRA adapter support.
+
+    Computes $L_2$-normalized dense visual embeddings from grayscale and RGB image tiles.
+    Extracts class token representations (`x_norm_clstoken`), supports Matryoshka dimension
+    truncation (e.g. 384-d), and provides self-attention rollout extraction for spatial
+    interpretability.
+
+    Attributes:
+        device: Active PyTorch computing device (CUDA, MPS, or CPU).
+        matryoshka_dim: Output feature embedding dimensionality (default 384).
+        backbone: Raw DINOv3 Vision Transformer neural network.
+        model: Model module with attached LoRA adapters.
     """
 
     def __init__(
@@ -25,7 +34,17 @@ class DINOEncoder:
         matryoshka_dim: int = 384,
         device: str = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu",
         base_weights_filename: str | None = None,
-    ):
+    ) -> None:
+        """Initialize the DINOv3 feature encoder.
+
+        Args:
+            lora_dir: Directory or HuggingFace repo containing fine-tuned LoRA weights.
+            base_weights_path: Path or HuggingFace repo ID for the base DINOv3 weights.
+            model_size: Vision Transformer architecture variant (``"vits16"``, ``"vitb16"``).
+            matryoshka_dim: Target embedding dimensionality for Matryoshka slicing.
+            device: Target torch device string (``"cuda"``, ``"mps"``, ``"cpu"``).
+            base_weights_filename: Specific filename of base weights inside repo.
+        """
         self.device = torch.device(device)
         self.matryoshka_dim = matryoshka_dim
 

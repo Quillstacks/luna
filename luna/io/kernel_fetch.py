@@ -123,12 +123,25 @@ def ensure_kernels_for_date(
     root: Optional[Path] = None,
     max_workers: int = 6,
 ) -> list[Path]:
-    """Ensure all kernels covering ``dt`` are present locally; return their paths.
+    """Ensure all SPICE kernels covering timestamp ``dt`` are present locally.
 
-    ``dt`` is the NAC exposure time (any instant inside the exposure). Fetches
-    the NAIF year metakernel for ``dt.year``, filters to entries whose time
-    window contains ``dt`` (or untimed kernels), and downloads the missing
-    ones in parallel.
+    Parses the NAIF annual metakernel for ``dt.year``, filters the ``KERNELS_TO_LOAD``
+    manifest to entries whose filename time window contains ``dt`` (plus timeless base
+    kernels), and downloads any missing kernels in parallel from the NASA NAIF archive.
+
+    Args:
+        dt: Observation timestamp (datetime object).
+        root: Local directory to store kernels. Defaults to ``data/spice/lro``.
+        max_workers: Number of parallel download threads.
+
+    Returns:
+        List of local ``Path`` objects to all verified kernels covering the timestamp.
+
+    Example:
+        >>> from datetime import datetime, timezone
+        >>> from luna.io.kernel_fetch import ensure_kernels_for_date
+        >>> paths = ensure_kernels_for_date(datetime(2012, 4, 15, tzinfo=timezone.utc))
+        >>> print(f"Ensured {len(paths)} kernels locally")
     """
     root = Path(root or DEFAULT_ROOT)
     session = requests.Session()

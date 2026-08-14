@@ -1,0 +1,121 @@
+site_name: ⦿ LUNA
+site_description: "L.U.N.A. — Lots of Unexplained NAC Anomalies | Lunar Pit Detection & SPICE Photogrammetry"
+site_author: "Moonatics Research Group"
+copyright: "Copyright &copy; 2026 Moonatics Research Group (@F1nnSBK, @schutera)"
+repo_url: https://github.com/Quillstacks/luna
+repo_name: Quillstacks/luna
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/moonatics
+      name: Moonatics Research Group
+
+theme:
+  name: material
+  palette:
+    # Palette toggle for dark mode (default)
+    - scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    # Palette toggle for light mode
+    - scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_root_heading: true
+            show_source: true
+            heading_level: 2
+            docstring_style: google
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      normalize_issue_symbols: true
+      repo_url_shorthand: true
+      user: Quillstacks
+      repo: luna
+  - pymdownx.mark
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  - https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js
+  - javascripts/mermaid.js
+
+nav:
+  - Overview: index.md
+  - Release Notes: release-notes.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+  - Core Guides & Physics:
+      - SPICE & Photogrammetry: guide/spice-and-photogrammetry.md
+      - PDS Data & Ingestion: guide/pds-and-io.md
+      - Vision Models & Encoders: guide/vision-and-models.md
+      - Screening & Streaming Engine: guide/screening-and-pithos.md
+      - Latent Mapping & Manifolds: guide/latent-mapping.md
+  - Tutorials & Operations:
+      - End-to-End Pit Detection: tutorials/pit-detection-pipeline.md
+      - Metrics API & Dashboard: tutorials/api-server.md
+  - API Reference:
+      - luna.io: reference/io.md
+      - luna.models: reference/models.md
+      - luna.screening: reference/screening.md
+      - luna.storage: reference/storage.md
+      - luna.latent_map: reference/latent_map.md
+      - luna.pipeline: reference/pipeline.md

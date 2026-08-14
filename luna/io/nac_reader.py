@@ -35,7 +35,22 @@ _QUICKMAP_NAC_SEARCH_ENDPOINT = "https://lroc-tiles.quickmap.io/fcgi-bin/fprovwe
 
 @dataclass
 class NACImage:
-    """A NAC CDR frame in memory."""
+    """In-memory representation of an LROC NAC frame with calibrated pixel raster and geometry.
+
+    Attributes:
+        pixels: 2D numpy array of shape ``(lines, samples)`` containing calibrated float32
+            $I/F$ reflectance normalized to $[0, 1]$. Sentinel null/saturation values
+            are represented as ``np.nan``.
+        lines: Total number of lines along-track (height).
+        samples: Total number of samples across-track (width, typically 5064).
+        product_id: LROC product identifier (e.g., ``"M1118880788RC"``).
+        center_lon: Center planetocentric longitude (degrees, 0–360), if geometry loaded.
+        center_lat: Center planetocentric latitude (degrees, -90..+90), if geometry loaded.
+        resolution_m: Ground sample distance in meters per pixel (typically 0.5–2.0 m/px).
+        footprint: Dictionary of corner coordinates (``"upper_left"``, ``"upper_right"``, etc.).
+        geometry: Full PDS INDEX.TAB geometry dictionary.
+        label: Raw PVL header label dictionary.
+    """
 
     pixels: np.ndarray          # shape (lines, samples), float32; invalid pixels = NaN
     lines: int
@@ -269,10 +284,24 @@ def get_nacs_from_polygon(
 
 
 def read_nac(path: str | Path, geometry: bool = False) -> NACImage:
-    """Parse a NAC CDR .IMG file into a NACImage.
+    """Parse an LROC NAC CDR ``.IMG`` file from disk into a ``NACImage``.
 
-    If ``geometry=True``, fetches footprint + resolution from PDS INDEX.TAB
-    via :class:`luna.io.pds_index.PDSIndex`.
+    Decodes the attached PVL header label, reads the binary 16-bit integer raster,
+    applies the calibration scaling and offset ($I/F = \\text{DN} \\cdot \\text{scale} + \\text{offset}$),
+    masks sentinel null/saturation pixels with ``np.nan``, and normalizes valid pixels to $[0, 1]$.
+
+    Args:
+        path: Path to the local ``.IMG`` raster file.
+        geometry: If True, queries :class:`luna.io.pds_index.PDSIndex` to attach
+            center coordinate, ground resolution, footprint corners, and solar angles.
+
+    Returns:
+        A loaded :class:`NACImage` object.
+
+    Example:
+        >>> from luna.io.nac_reader import read_nac
+        >>> img = read_nac("data/_scratch/M1118880788RC.IMG", geometry=True)
+        >>> print(f"{img.product_id}: {img.samples}x{img.lines}, res={img.resolution_m} m/px")
     """
     path = Path(path)
     with open(path, "rb") as f:

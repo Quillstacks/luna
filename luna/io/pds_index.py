@@ -110,7 +110,18 @@ class VolumeInfo:
 
 
 class PDSIndex:
-    """Binary-search resolver for LROC CDR product IDs."""
+    """Binary-search resolver for NASA Planetary Data System (PDS) LROC product IDs.
+
+    The LROC CDR and EDR archives partition millions of observations across ~35
+    volume directories (`LROLRC_10xx`), each containing a fixed-width `INDEX.TAB`.
+    `PDSIndex` uses HTTP range-requests to perform $O(\\log N)$ binary search directly
+    over remote index files, resolving download URLs in $< 50\\text{ ms}$.
+
+    Attributes:
+        base_url: Base HTTP URL of the PDS archive.
+        archive: Archive type, either ``"CDR"`` (calibrated) or ``"EDR"`` (raw).
+        suffix: Product suffix character (``"C"`` for CDR, ``"E"`` for EDR).
+    """
 
     def __init__(
         self,
@@ -119,6 +130,15 @@ class PDSIndex:
         session: Optional[requests.Session] = None,
         archive: str = "CDR",
     ) -> None:
+        """Initialize a PDSIndex resolver.
+
+        Args:
+            base_url: Optional custom PDS archive root URL. If None, uses default
+                CDR/EDR endpoints.
+            cache_path: Optional path for storing volume boundary metadata.
+            session: Optional custom ``requests.Session`` with customized adapters.
+            archive: Archive type to query (``"CDR"`` or ``"EDR"``, case-insensitive).
+        """
         if session is not None:
             self.session = session
         else:
@@ -311,6 +331,23 @@ class PDSIndex:
         raise KeyError(f"Product {product_id!r} not found in any volume")
 
     def url_for(self, product_id: str) -> str:
+        """Resolve a full download URL for an LROC NAC product ID.
+
+        Args:
+            product_id: Product ID string (e.g., ``"M1118880788RC"`` or ``"M1118880788R"``).
+
+        Returns:
+            Direct HTTPS download URL to the product raster file on the PDS server.
+
+        Raises:
+            KeyError: If the product ID is not found in any volume index.
+
+        Example:
+            >>> from luna.io.pds_index import PDSIndex
+            >>> idx = PDSIndex()
+            >>> url = idx.url_for("M1118880788RC")
+            >>> print(url)
+        """
         pid = _normalize_product_id(product_id, self.suffix)
         if hasattr(self, "_geom_cache") and pid in self._geom_cache and "file_spec_name" in self._geom_cache[pid]:
             fsn = self._geom_cache[pid]["file_spec_name"]
@@ -322,6 +359,25 @@ class PDSIndex:
         return self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
 
     def geometry_for(self, product_id: str) -> dict:
+        """Retrieve the parsed INDEX geometry metadata dictionary for a product ID.
+
+        Args:
+            product_id: Product ID string (e.g., ``"M1118880788RC"``).
+
+        Returns:
+            Dictionary containing corner coordinates (``upper_left_latitude``,
+            ``upper_left_longitude``, etc.), photometric angles (``emission_angle``,
+            ``incidence_angle``, ``phase_angle``), and ground resolution.
+
+        Raises:
+            KeyError: If the product is not found in the PDS index.
+
+        Example:
+            >>> from luna.io.pds_index import PDSIndex
+            >>> idx = PDSIndex()
+            >>> geom = idx.geometry_for("M1118880788RC")
+            >>> print(geom["resolution"], geom["emission_angle"])
+        """
         pid = _normalize_product_id(product_id, self.suffix)
         if hasattr(self, "_geom_cache") and pid in self._geom_cache:
             return self._geom_cache[pid]
