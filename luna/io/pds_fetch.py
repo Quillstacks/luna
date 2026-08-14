@@ -106,7 +106,7 @@ def fetch_nac(
     upon successful completion to prevent corrupted or partial files on disk.
 
     Retries on transient network errors (``ConnectionError``, ``Timeout``,
-    ``ChunkedEncodingError``) with exponential backoff; partial temporary files
+    ``ChunkedEncodingError``, ``HTTPError``) with exponential backoff; partial temporary files
     are discarded between attempts.
     
     Args:
@@ -150,6 +150,7 @@ def fetch_nac(
         requests.exceptions.ConnectionError,
         requests.exceptions.Timeout,
         requests.exceptions.ChunkedEncodingError,
+        requests.exceptions.HTTPError,
     )
     last_err: Optional[Exception] = None
     for attempt in range(1, retries + 1):
