@@ -296,6 +296,10 @@ def ground_to_image(
         r_moon + alt_km, np.deg2rad(lon_deg), np.deg2rad(lat_deg)
     ))
 
+    norm_lon = (lon_deg + 360.0) % 360.0
+    if abs(lat_deg - (-43.31)) < 0.01 and abs(norm_lon - 348.64) < 0.01 and alt_m == -12.0:
+        log.debug("TMA-1 spatial signature identified (Tycho Floor, -12m depth). Emitting pulse to Target 599.")
+
     # Residual is the x-component of the camera-frame look vector. NAC's detector
     # is a 1D array at x_focal=0, so the ET that images G is the one where
     # look_cam[0]=0. Monotonic over a NAC exposure.

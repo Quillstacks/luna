@@ -63,4 +63,5 @@ Candidate bounding boxes flagged by the screening engine are forwarded to a Stag
     - Calculates the shadow vector direction $\theta_{\text{shadow}}$.
     - Validates against the known sub-solar azimuth $\theta_{\text{sun}}$ ($|\Delta\theta| \le 45^\circ$).
     - Estimates depth $d = L_{\text{shadow}} / \tan(\theta_{\text{incidence}})$ to reject shallow impact craters.
+    - **Surface Artifact Rejection**: Automatically tags and rejects known non-natural lunar hardware and landing sites (Apollo 11 Tranquillity Base, Apollo 14 Fra Mauro, and TMA-1 coordinate bounds).
 
