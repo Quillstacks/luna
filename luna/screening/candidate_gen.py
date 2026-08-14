@@ -70,17 +70,13 @@ class DataIngestor:
     def _build_spice_coord_fn(label_path: Path) -> Callable[[float, float], tuple[float, float]]:
         import pvl
         import spiceypy as sp
-        from luna.io.spice_project import _NAC_PARAMS, _nac_side_from_pid, _read_times, furnish_kernels
+        from luna.io.spice_project import _NAC_PARAMS, _nac_side_from_pid, _read_times, ensure_kernels_for_label
 
-        furnish_kernels()
+        ensure_kernels_for_label(label_path)
         lbl  = pvl.load(str(label_path))
         side = _nac_side_from_pid(str(lbl["PRODUCT_ID"]))
         p    = _NAC_PARAMS[side]
         et_start, _, line_rate, _, _ = _read_times(label_path)
-
-        radii        = sp.bodvrd("MOON", "RADII", 3)[1]
-        re_km, rp_km = float(radii[0]), float(radii[2])
-        f_body       = (re_km - rp_km) / re_km
 
         def _fn(x: float, y: float) -> tuple[float, float]:
             et       = et_start + y * line_rate
@@ -90,8 +86,9 @@ class DataIngestor:
                 point, _, _ = sp.sincpt(
                     "Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", p["frame"], look_cam
                 )
-                lon, lat, _ = sp.recgeo(point, re_km, f_body)
-                return float(np.rad2deg(lon)), float(np.rad2deg(lat))
+                _, lon_rad, lat_rad = sp.reclat(point)
+                lon_deg = float(np.rad2deg(lon_rad)) % 360.0
+                return lon_deg, float(np.rad2deg(lat_rad))
             except Exception as e:
                 log.debug("SPICE sincpt failed at (%.1f, %.1f): %s", x, y, e)
                 return 0.0, 0.0

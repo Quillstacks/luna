@@ -70,23 +70,47 @@ class LinearProjection:
         H = int(raw_lines)
         
         try:
-            lon_c = np.array([
-                geom["upper_left_longitude"],
-                geom["upper_right_longitude"],
-                geom["lower_left_longitude"],
-                geom["lower_right_longitude"],
-            ], dtype=np.float64)
-            lat_c = np.array([
-                geom["upper_left_latitude"],
-                geom["upper_right_latitude"],
-                geom["lower_left_latitude"],
-                geom["lower_right_latitude"],
-            ], dtype=np.float64)
+            ul_lon = float(geom["upper_left_longitude"])
+            ur_lon = float(geom["upper_right_longitude"])
+            ll_lon = float(geom["lower_left_longitude"])
+            lr_lon = float(geom["lower_right_longitude"])
+
+            ul_lat = float(geom["upper_left_latitude"])
+            ur_lat = float(geom["upper_right_latitude"])
+            ll_lat = float(geom["lower_left_latitude"])
+            lr_lat = float(geom["lower_right_latitude"])
         except (KeyError, TypeError) as e:
             raise ValueError(f"Missing or invalid corner coordinates in geometry: {e}")
 
-        if np.isnan(lon_c).any() or np.isnan(lat_c).any():
+        if np.isnan([ul_lon, ur_lon, ll_lon, lr_lon, ul_lat, ur_lat, ll_lat, lr_lat]).any():
             raise ValueError("NaN values found in corner coordinates.")
+
+        # Determine track direction (ascending: South->North, descending: North->South)
+        start_lat = geom.get("start_lat", geom.get("start_latitude"))
+        stop_lat = geom.get("stop_lat", geom.get("stop_latitude"))
+        orbit_dir = str(geom.get("orbit_direction", "")).upper()
+
+        if start_lat is not None and stop_lat is not None:
+            is_ascending = float(stop_lat) > float(start_lat)
+        elif orbit_dir in ("ASCENDING", "A"):
+            is_ascending = True
+        elif orbit_dir in ("DESCENDING", "D"):
+            is_ascending = False
+        else:
+            # If upper_left is south of lower_left, the image was indexed South->North
+            is_ascending = ul_lat < ll_lat
+
+        # In standard NAC line-scan camera geometry:
+        # Line 0 (v=0) is the start of exposure; Line H-1 (v=1) is the end.
+        # If upper_* represents the northern edge and lower_* the southern edge (ul_lat > ll_lat),
+        # then for ascending orbits (South->North passes), Line 0 is at the southern edge (lower_*)
+        # and Line H-1 is at the northern edge (upper_*).
+        if is_ascending and ul_lat > ll_lat:
+            lon_c = np.array([ll_lon, lr_lon, ul_lon, ur_lon], dtype=np.float64)
+            lat_c = np.array([ll_lat, lr_lat, ul_lat, ur_lat], dtype=np.float64)
+        else:
+            lon_c = np.array([ul_lon, ur_lon, ll_lon, lr_lon], dtype=np.float64)
+            lat_c = np.array([ul_lat, ur_lat, ll_lat, lr_lat], dtype=np.float64)
 
         # Ensure lon_corners are continuous across 0/360 if spanning the meridian
         lon_c = lon_c[0] + (lon_c - lon_c[0] + 180.0) % 360.0 - 180.0

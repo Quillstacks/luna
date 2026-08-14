@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import glob
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -55,14 +56,17 @@ _NAC_PARAMS = {
 }
 
 _FURNISHED: set[str] = set()
+_LOADED_WINDOW: tuple[datetime, datetime] | None = None
 
 
 def furnish_kernels(kernel_root: Path | str | None = None) -> int:
     """Load every SPICE kernel under ``kernel_root`` into the pool.
 
-    Idempotent — re-calls skip kernels already furnished. Returns the total
-    number in the pool afterwards.
+    Idempotent — re-calls skip kernels already furnished. Preserved for
+    high-throughput batch workloads within a single mission phase. Returns the
+    total number in the pool afterwards.
     """
+    global _LOADED_WINDOW
     root = Path(kernel_root or DEFAULT_KERNEL_ROOT)
     exts = ("tls", "tsc", "tpc", "bpc", "tf", "ti", "bsp", "bc")
     for ext in exts:
@@ -70,22 +74,76 @@ def furnish_kernels(kernel_root: Path | str | None = None) -> int:
             if f not in _FURNISHED:
                 sp.furnsh(f)
                 _FURNISHED.add(f)
+    _LOADED_WINDOW = None
     total = sp.ktotal("ALL")
     log.debug("kernel pool: %d loaded", total)
     return total
 
 
-def ensure_kernels_for_label(label_path: Path | str, kernel_root: Path | str | None = None) -> None:
-    """Make sure all SPICE kernels needed to project from ``label_path`` are present.
+def furnish_kernels_for_date(
+    dt: datetime,
+    kernel_root: Path | str | None = None,
+    force: bool = False,
+) -> int:
+    """Load untimed base kernels + only the SPK and CK kernels covering ``dt`` into the pool.
 
-    Looks up the NAC START_TIME, runs :func:`luna.io.kernel_fetch.ensure_kernels_for_date`,
-    then furnishes everything under ``kernel_root``.
+    Clears the SPICE kernel pool via ``sp.kclear()`` before loading if the active
+    kernel pool does not already cover ``dt``, preventing DAF handle table
+    overflow when querying across multiple mission years.
+    """
+    global _LOADED_WINDOW
+    from .kernel_fetch import _kernel_covers, _WINDOW_RE, _ydoy_to_date
+
+    dt_utc = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+    if not force and _LOADED_WINDOW is not None and len(_FURNISHED) > 0:
+        win_start, win_end = _LOADED_WINDOW
+        if win_start <= dt_utc <= win_end and sp.ktotal("ALL") > 0:
+            return sp.ktotal("ALL")
+
+    sp.kclear()
+    _FURNISHED.clear()
+
+    root = Path(kernel_root or DEFAULT_KERNEL_ROOT)
+    exts = ("tls", "tsc", "tpc", "bpc", "tf", "ti", "bsp", "bc")
+    timed_starts: list[datetime] = []
+    timed_ends: list[datetime] = []
+
+    for ext in exts:
+        for f in sorted(glob.glob(str(root / "**" / f"*.{ext}"), recursive=True)):
+            fname = Path(f).name
+            if _kernel_covers(fname, dt_utc):
+                if f not in _FURNISHED:
+                    sp.furnsh(f)
+                    _FURNISHED.add(f)
+                m = _WINDOW_RE.search(fname)
+                if m:
+                    y0, d0, y1, d1 = map(int, m.groups())
+                    timed_starts.append(_ydoy_to_date(y0, d0))
+                    timed_ends.append(_ydoy_to_date(y1, d1))
+
+    if timed_starts and timed_ends:
+        _LOADED_WINDOW = (max(timed_starts), min(timed_ends))
+    else:
+        _LOADED_WINDOW = None
+
+    total = sp.ktotal("ALL")
+    log.debug("kernel pool (for %s): %d loaded", dt_utc.isoformat(), total)
+    return total
+
+
+def ensure_kernels_for_label(label_path: Path | str, kernel_root: Path | str | None = None) -> None:
+    """Make sure all SPICE kernels needed to project from ``label_path`` are present and furnished.
+
+    Looks up the NAC START_TIME, ensures missing kernels are downloaded via
+    :func:`luna.io.kernel_fetch.ensure_kernels_for_date`, then selectively
+    furnishes kernels covering that timestamp.
     """
     from .kernel_fetch import ensure_kernels_for_date  # local import to avoid cycles
     lbl = pvl.load(str(label_path))
     start_dt = lbl["START_TIME"].replace(tzinfo=None)
     ensure_kernels_for_date(start_dt, root=kernel_root)
-    furnish_kernels(kernel_root)
+    furnish_kernels_for_date(start_dt, kernel_root=kernel_root)
 
 
 def _nac_side_from_pid(product_id: str) -> str:
@@ -146,22 +204,39 @@ def ground_to_image(
     Uses full SPICE geometry: spacecraft ephemeris, attitude CKs, and the NAC
     IK. Returns sub-pixel coords; caller may round as needed. Raises
     ``ValueError`` if the point is outside the exposure window.
+
+    Parameters
+    ----------
+    label_path:
+        Path to PDS3 .LBL / .IMG file.
+    lon_deg:
+        Planetocentric longitude in degrees (0–360).
+    lat_deg:
+        Planetocentric latitude in degrees (-90 to +90).
+    alt_m:
+        Surface altitude in meters relative to the Moon reference sphere
+        (e.g., from LOLA DEM). Crucial for off-nadir observations to prevent
+        parallax displacement.
+    kernel_root:
+        Optional root directory of SPICE kernels.
     """
-    furnish_kernels(kernel_root)
     label_path = Path(label_path)
     lbl = pvl.load(str(label_path))
+    start_dt = lbl["START_TIME"].replace(tzinfo=None)
+    furnish_kernels_for_date(start_dt, kernel_root)
+
     pid = str(lbl["PRODUCT_ID"])
     side = _nac_side_from_pid(pid)
     p = _NAC_PARAMS[side]
 
     et_start, et_stop, line_rate, n_lines, n_samples = _read_times(label_path)
 
-    # Ground point in body-fixed IAU_MOON. Moon radii in km -> meters handled below.
+    # Ground point in body-fixed IAU_MOON via planetocentric coordinates.
     radii = sp.bodvrd("MOON", "RADII", 3)[1]
-    re_km, rp_km = float(radii[0]), float(radii[2])
-    f_body = (re_km - rp_km) / re_km
-    G_bf = np.asarray(sp.georec(
-        np.deg2rad(lon_deg), np.deg2rad(lat_deg), alt_m / 1000.0, re_km, f_body
+    r_moon = float(radii[0])
+    alt_km = alt_m / 1000.0
+    G_bf = np.asarray(sp.latrec(
+        r_moon + alt_km, np.deg2rad(lon_deg), np.deg2rad(lat_deg)
     ))
 
     # Residual is the x-component of the camera-frame look vector. NAC's detector
@@ -200,6 +275,7 @@ def ground_to_image(
 
     return float(sample), float(line)
 
+
 def image_to_ground(
     label_path: Path | str,
     sample: float,
@@ -207,9 +283,11 @@ def image_to_ground(
     kernel_root: Path | str | None = None,
 ) -> tuple[float, float]:
     """(sample, line) 0-indexed -> (lon, lat) via SPICE."""
-    furnish_kernels(kernel_root)
     label_path = Path(label_path)
     lbl = pvl.load(str(label_path))
+    start_dt = lbl["START_TIME"].replace(tzinfo=None)
+    furnish_kernels_for_date(start_dt, kernel_root)
+
     side = _nac_side_from_pid(str(lbl["PRODUCT_ID"]))
     p = _NAC_PARAMS[side]
 
@@ -222,10 +300,9 @@ def image_to_ground(
     
     try:
         point, _, _ = sp.sincpt("Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", p["frame"], look_cam)
-        re_km, rp_km = float(radii[0]), float(radii[2])
-        f_body = (re_km - rp_km) / re_km
-        lon_rad, lat_rad, _ = sp.recgeo(point, re_km, f_body)
-        return float(np.rad2deg(lon_rad)), float(np.rad2deg(lat_rad))
+        _, lon_rad, lat_rad = sp.reclat(point)
+        lon_deg = float(np.rad2deg(lon_rad)) % 360.0
+        return lon_deg, float(np.rad2deg(lat_rad))
     except Exception:
         return 0.0, 0.0
 
@@ -235,7 +312,9 @@ def lonlat_to_pixel_spice(
     lon_deg: float,
     lat_deg: float,
     alt_m: float = 0.0,
+    kernel_root: Path | str | None = None,
 ) -> tuple[int, int]:
     """Integer (sample_idx, line_idx), 0-indexed. Convenience wrapper."""
-    s, l = ground_to_image(label_path, lon_deg, lat_deg, alt_m)
+    s, l = ground_to_image(label_path, lon_deg, lat_deg, alt_m, kernel_root)
     return int(round(s)), int(round(l))
+

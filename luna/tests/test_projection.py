@@ -63,3 +63,51 @@ def test_linear_projection_meridian_crossing():
     assert np.isclose(v1, 0.5, atol=1e-5)
     assert np.isclose(u1, u2, atol=1e-5)
     assert np.isclose(v1, v2, atol=1e-5)
+
+
+def test_linear_projection_ascending_orbit():
+    # Ascending pass (South to North) where corners are indexed by line
+    # Line 0 is at South (lat 10.0), Line 2000 is at North (lat 12.0)
+    geom_line_indexed = {
+        "upper_left_longitude": 40.0,
+        "upper_right_longitude": 40.5,
+        "lower_left_longitude": 40.0,
+        "lower_right_longitude": 40.5,
+        "upper_left_latitude": 10.0,
+        "upper_right_latitude": 10.0,
+        "lower_left_latitude": 12.0,
+        "lower_right_latitude": 12.0,
+        "line_samples": 1001,
+        "image_lines": 2001,
+    }
+    proj1 = LinearProjection.from_nac_geometry(geom_line_indexed)
+    px1, py1 = lonlat_to_pixel(proj1, 40.25, 11.0)
+    assert px1 == 500
+    assert py1 == 1000
+    # Line 0 should be at lat 10.0
+    _, py_start = lonlat_to_pixel(proj1, 40.25, 10.0)
+    assert py_start == 0
+
+    # Ascending pass with explicit start_lat / stop_lat and GIS corners (North first)
+    geom_gis = {
+        "upper_left_longitude": 40.0,
+        "upper_right_longitude": 40.5,
+        "lower_left_longitude": 40.0,
+        "lower_right_longitude": 40.5,
+        "upper_left_latitude": 12.0,
+        "upper_right_latitude": 12.0,
+        "lower_left_latitude": 10.0,
+        "lower_right_latitude": 10.0,
+        "start_latitude": 10.0,
+        "stop_latitude": 12.0,
+        "line_samples": 1001,
+        "image_lines": 2001,
+    }
+    proj2 = LinearProjection.from_nac_geometry(geom_gis)
+    px2, py2 = lonlat_to_pixel(proj2, 40.25, 11.0)
+    assert px2 == 500
+    assert py2 == 1000
+    # Line 0 is at start_latitude (10.0)
+    _, py_gis_start = lonlat_to_pixel(proj2, 40.25, 10.0)
+    assert py_gis_start == 0
+
