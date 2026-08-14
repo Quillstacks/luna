@@ -1,4 +1,4 @@
-# LUNA
+# ⦿ LUNA
 
 > **L.U.N.A.** — *Lots of Unexplained NAC Anomalies*  
 > Python library for lunar pit detection, SPICE photogrammetry, and orbital imagery analysis on NASA LROC NAC products.
