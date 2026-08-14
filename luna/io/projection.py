@@ -44,7 +44,19 @@ def _affine_guess(
 
 @dataclass
 class LinearProjection:
-    """Bilinear map between NAC pixel and lon/lat using the 4 INDEX corners."""
+    """Bilinear map between NAC pixel space and lunar lon/lat using the 4 INDEX corners.
+
+    Approximates the trapezoidal projection of an LROC NAC strip on the Moon using
+    a 2D bilinear model parameterized by unit coordinates $(u, v) \\in [0, 1]^2$.
+
+    Attributes:
+        lon_corners: Array of 4 continuous longitude corners [UL, UR, LL, LR] (degrees).
+        lat_corners: Array of 4 latitude corners [UL, UR, LL, LR] (degrees).
+        samples: Total number of detector samples across-track (width $W$).
+        lines: Total number of lines along-track (height $H$).
+        _affine_fwd: Affine initial guess transformation matrix from (lon, lat) to (u, v).
+        _affine_inv: Inverse affine matrix from (u, v) to (lon, lat).
+    """
 
     lon_corners: np.ndarray 
     lat_corners: np.ndarray  
@@ -60,6 +72,28 @@ class LinearProjection:
         samples: Optional[int] = None,
         lines: Optional[int] = None,
     ) -> "LinearProjection":
+        """Instantiate a LinearProjection from a PDS INDEX geometry dictionary.
+
+        Automatically inspects orbit direction (ascending vs. descending passes)
+        and meridian wrapping across $0^\\circ/360^\\circ$ to ensure Line 0 maps to the
+        actual exposure start.
+
+        Args:
+            geom: Geometry dictionary containing corner keys (``upper_left_latitude``,
+                ``upper_left_longitude``, etc.) and optional orbit metadata.
+            samples: Number of image samples (columns). If None, reads from ``geom['line_samples']``.
+            lines: Number of image lines (rows). If None, reads from ``geom['image_lines']``.
+
+        Returns:
+            Configured ``LinearProjection`` instance.
+
+        Raises:
+            ValueError: If required dimensions or corner coordinates are missing or NaN.
+
+        Example:
+            >>> from luna.io.projection import LinearProjection
+            >>> proj = LinearProjection.from_nac_geometry(geom_dict, samples=5064, lines=52224)
+        """
         raw_samples = samples if samples is not None else geom.get("line_samples")
         raw_lines = lines if lines is not None else geom.get("image_lines")
         
@@ -248,6 +282,22 @@ def get_image_of_roi(
 
 
 def lonlat_to_pixel(proj: LinearProjection, lon: float, lat: float) -> tuple[int, int]:
+    """Map lunar coordinates (lon, lat) to integer pixel coordinates (sample_idx, line_idx).
+
+    Solves the inverse bilinear mapping via 2D Newton-Raphson iteration starting
+    from the affine linear estimate.
+
+    Args:
+        proj: Configured ``LinearProjection`` instance.
+        lon: Longitude in degrees (0–360 or -180..+180).
+        lat: Latitude in degrees (-90 to +90).
+
+    Returns:
+        A tuple of integer ``(x_sample, y_line)`` pixel coordinates.
+
+    Example:
+        >>> s, l = lonlat_to_pixel(proj, lon=312.4, lat=19.5)
+    """
     u, v = proj._solve_uv(lon, lat)
     x = u * (proj.samples - 1)
     y = v * (proj.lines - 1)
@@ -255,6 +305,21 @@ def lonlat_to_pixel(proj: LinearProjection, lon: float, lat: float) -> tuple[int
 
 
 def pixel_to_lonlat(proj: LinearProjection, x: int, y: int) -> tuple[float, float]:
+    """Map integer pixel coordinates (sample_idx, line_idx) to lunar ground coordinates (lon, lat).
+
+    Evaluates the forward bilinear surface interpolation at unit coordinates $(u, v)$.
+
+    Args:
+        proj: Configured ``LinearProjection`` instance.
+        x: Detector sample index (0 to W-1).
+        y: Detector line index (0 to H-1).
+
+    Returns:
+        A tuple of ``(lon, lat)`` in degrees.
+
+    Example:
+        >>> lon, lat = pixel_to_lonlat(proj, x=2500, y=10000)
+    """
     u = x / (proj.samples - 1)
     v = y / (proj.lines - 1)
     return proj._bilinear_ll(u, v)

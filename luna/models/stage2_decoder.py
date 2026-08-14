@@ -37,7 +37,18 @@ def compute_lunar_distance(lat1: float, lon1: float, lat2: float, lon2: float) -
 
 @dataclass
 class Stage2Config:
-    """Configuration for Stage-2 Dense Prediction Decoder."""
+    """Configuration hyperparameters for the Stage-2 Dense Prediction Decoder.
+
+    Attributes:
+        input_image_size: Input spatial tile dimension in pixels (default 256).
+        patch_size: Vision Transformer patch size in pixels (default 16 for ViT-S/16).
+        dino_hidden_dim: Hidden dimension of the DINOv3 backbone (default 1024 / 384).
+        projection_dim: Channel dimension after geometric spatial projection (default 256).
+        fpn_dims: Channel dimensions for each Feature Pyramid Network stage.
+        num_classes: Number of semantic output classes (Background, Pit Void, Rim Collar).
+        min_depth_to_width_ratio: Physics threshold for shadow depth-to-diameter ratio (default 0.04).
+        border_margin: Margin in pixels to ignore edge artifacts.
+    """
     input_image_size: int = 256
     patch_size: int = 16
     dino_hidden_dim: int = 1024
@@ -61,8 +72,14 @@ DEFAULT_CONFIG = Stage2Config()
 
 
 class SpatialTokenExtractor:
-    """Extracts spatial patch tokens from DINOv3 feature maps."""
+    """Extracts spatial patch tokens from DINOv3 Vision Transformer intermediate features.
+
+    Handles token dictionary keys across different DINOv3 and HuggingFace ViT versions
+    (``'x_norm_patchtokens'``, ``'x_prenorm'``, ``'x'``).
+    """
     def __init__(self, patch_size: int = 16, hidden_dim: int = 1024):
+        self.patch_size = patch_size
+        self.hidden_dim = hidden_dim
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
     
@@ -286,7 +303,21 @@ class PhysicsValidator:
 
 
 class Stage2DenseDecoder(nn.Module):
-    """Complete multi-phase dense reasoning framework."""
+    """Dense prediction decoder performing multi-scale semantic segmentation on DINOv3 tokens.
+
+    Reconstructs 2D spatial feature grids from flat ViT patch token sequences, processes
+    them through a Feature Pyramid Network (FPN) with bilateral skip connections, and outputs
+    high-resolution 3-class segmentation masks (Background, Pit Shadow Void, Rim Collar).
+    Integrates physics-based illumination validation for false-positive rejection.
+
+    Attributes:
+        config: :class:`Stage2Config` instance specifying model dimensions.
+        device: Active PyTorch device (CUDA, MPS, or CPU).
+        reconstructor: :class:`GeometricReconstructor` mapping tokens to 2D feature grids.
+        fpn: :class:`FeaturePyramidNetwork` progressive upsampling backbone.
+        classification_head: :class:`ThreeClassSegmentationHead` producing class logits.
+        physics_validator: :class:`PhysicsValidator` checking shadow-to-illumination alignment.
+    """
     def __init__(self, config: Stage2Config = DEFAULT_CONFIG, device: Optional[str] = None):
         super().__init__()
         self.config = config

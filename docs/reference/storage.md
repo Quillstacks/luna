@@ -1,9 +1,22 @@
 # `luna.storage` Reference
 
-Vector and metadata storage backends.
+`luna.storage` provides on-disk and in-memory vector index storage backends for candidate embeddings and metadata.
 
 ---
 
-::: luna.storage
+## Pithos Native Binary Storage (`luna.storage.pithos_store`)
+
+::: luna.storage.pithos_store
     options:
-      members: true
+      members:
+        - PithosStore
+
+---
+
+## FAISS Local Index Storage (`luna.storage.faiss_store`)
+
+::: luna.storage.faiss_store
+    options:
+      members:
+        - FaissLocalStore
+

@@ -110,4 +110,5 @@ nav:
       - luna.models: reference/models.md
       - luna.screening: reference/screening.md
       - luna.storage: reference/storage.md
+      - luna.latent_map: reference/latent_map.md
       - luna.pipeline: reference/pipeline.md

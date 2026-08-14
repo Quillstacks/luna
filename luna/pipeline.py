@@ -47,6 +47,18 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class CandidateHit:
+    """Candidate detection hit produced by Stage-1 Pithos screening and spatial NMS.
+
+    Attributes:
+        rank: Rank ordering index (1-indexed, sorted by consensus score).
+        product_id: LROC NAC observation product ID (e.g., ``"M1118880788RC"``).
+        votes: Number of query votes or detector consensus count.
+        score: Stage-1 quality score (Hamming distance or consensus score).
+        lon: Lunar planetocentric longitude in degrees (0–360).
+        lat: Lunar planetocentric latitude in degrees (-90 to +90).
+        x_offset: Sample (column) offset within the full-resolution NAC strip (pixels).
+        y_offset: Line (row) offset within the full-resolution NAC strip (pixels).
+    """
     rank: int
     product_id: str
     votes: int
@@ -74,11 +86,22 @@ class CandidateHit:
 # ---------------------------------------------------------------------------
 
 def apply_lunar_spatial_nms(hits: list, distance_threshold_meters: float = 150.0) -> list:
-    """Apply Non-Maximum Suppression using spherical (Haversine) distance on the Moon.
+    """Apply Non-Maximum Suppression using spherical surface distance on the Moon.
 
-    Supports CandidateHit, RefinedHit, and dictionary inputs. Re-ranks returned hits.
-    For raw candidates, lower Hamming distance (score) is better. For refined hits,
-    higher similarity/score is better.
+    Computes pairwise great-circle (Haversine) distances ($R_{\\text{moon}} = 1737.4\\text{ km}$)
+    and suppresses redundant detections within ``distance_threshold_meters`` of higher-ranked
+    detections.
+
+    Args:
+        hits: List of candidate hits (:class:`CandidateHit`, :class:`RefinedHit`, or dicts).
+        distance_threshold_meters: Suppression radius in meters (default 150.0 m).
+
+    Returns:
+        Filtered list of non-overlapping hits, re-ranked from 1 to $K$.
+
+    Example:
+        >>> from luna.pipeline import apply_lunar_spatial_nms
+        >>> filtered_hits = apply_lunar_spatial_nms(raw_hits, distance_threshold_meters=150.0)
     """
     if not hits:
         return []
@@ -159,6 +182,17 @@ def apply_lunar_spatial_nms(hits: list, distance_threshold_meters: float = 150.0
 # ---------------------------------------------------------------------------
 
 class LunaPipeline:
+    """High-level processing pipeline for planetary-scale lunar pit detection.
+
+    Coordinates end-to-end data ingestion, tile slicing, DINOv3 feature embedding,
+    native Pithos binary indexing, multi-family resonant voting, spatial NMS, and
+    Stage-2 dense geometric refinement.
+
+    Attributes:
+        _encoder: Feature embedding neural network (:class:`luna.models.dinov3.dino_encoder.DINOEncoder`).
+        _device: Active PyTorch computation device.
+        _config: Pipeline configuration hyperparameters (:class:`luna.config.LunaConfig`).
+    """
     def __init__(self, encoder, device: str, config: LunaConfig | None = None) -> None:
         self._encoder = encoder
         self._device  = device
@@ -181,6 +215,26 @@ class LunaPipeline:
         config: LunaConfig | None = None,
         refiner: str = "essa",
     ) -> LunaPipeline:
+        """Create a pre-configured LunaPipeline from fine-tuned model checkpoints.
+
+        Downloads or loads DINOv3 Vision Transformer backbone and fine-tuned LoRA
+        adapters from the HuggingFace Hub or local cache.
+
+        Args:
+            repo_id: HuggingFace repository ID or local path (e.g., ``"luna/lunar-dinov3-lora"``).
+            matryoshka_dim: Dimensionality of output embeddings (default 384).
+            device: Computing device (``"cuda"``, ``"mps"``, ``"cpu"``).
+            config: Optional custom pipeline configuration.
+            refiner: Secondary refinement model type (``"essa"`` or ``"dino"``).
+
+        Returns:
+            Configured and initialized :class:`LunaPipeline` instance.
+
+        Example:
+            >>> from luna import LunaPipeline
+            >>> pipeline = LunaPipeline.from_pretrained("luna/lunar-dinov3-lora")
+            >>> hits = pipeline.scan("M1118880788RC", query_dir="data/_scratch/pits/")
+        """
         from luna.models.dinov3 import DINOEncoder
         if device is None:
             device = (
@@ -585,6 +639,36 @@ class LunaPipeline:
         on_progress: Callable[[str, int, int], None] | None = None,
         pithos_base_threshold: int | None = None,
     ) -> list[CandidateHit] | tuple[list[CandidateHit], MetricsReport]:
+        """Scan one or more LROC NAC products for candidate lunar collapse pits.
+
+        Executes the full pipeline:
+        1. On-demand PDS download and index resolution.
+        2. Fixed-stride tile slicing and DINOv3 feature embedding.
+        3. Native Pithos SIMD index compilation and multi-family resonant voting.
+        4. Spatial Non-Maximum Suppression (NMS) in lunar coordinate space.
+
+        Args:
+            product_ids: Single product ID (e.g. ``"M1118880788RC"``) or list of product IDs.
+            query_dir: Path to directory containing reference pit .npy patches or compiled embeddings.
+            top_k: Maximum number of final candidate hits to return (default 100).
+            search_k: Number of raw nearest neighbors retrieved per query anchor (default 1000).
+            min_dist_px: NMS suppression radius in pixels (default 512 px).
+            force_reingest: If True, ignores cached Pithos binary indices and re-embeds image tiles.
+            trace: Optional dictionary to capture microsecond execution timing profiles.
+            metrics: If True, returns a tuple of ``(hits, MetricsReport)``.
+            on_progress: Optional callback invoked with ``(product_id, current_idx, total)``.
+            pithos_base_threshold: Hamming distance threshold for resonant voting consensus.
+
+        Returns:
+            List of ranked :class:`CandidateHit` objects (or ``(hits, MetricsReport)`` if ``metrics=True``).
+
+        Example:
+            >>> from luna import LunaPipeline
+            >>> pipeline = LunaPipeline.from_pretrained("luna/lunar-dinov3-lora")
+            >>> hits = pipeline.scan("M1118880788RC", query_dir="data/_scratch/pits/")
+            >>> for hit in hits[:5]:
+            ...     print(f"Rank {hit.rank}: ({hit.lon:.3f}, {hit.lat:.3f}) score={hit.score:.1f}")
+        """
         # Use config defaults if not provided
         if top_k is None:
             top_k = self._config.final_top_k

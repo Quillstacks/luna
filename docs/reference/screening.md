@@ -1,9 +1,35 @@
 # `luna.screening` Reference
 
-Lock-free streaming engine and candidate generation protocols.
+`luna.screening` defines the vector-search screening protocols, tile ingestion pipelines, and the native Pithos SIMD index interface.
 
 ---
 
-::: luna.screening
+## Screening Protocols & Metadata (`luna.screening.protocols`)
+
+::: luna.screening.protocols
     options:
-      members: true
+      members:
+        - TileMetadata
+        - SearchResult
+        - EmbeddingModel
+        - VectorStore
+
+---
+
+## Pithos Native SIMD Engine (`luna.screening.pithos`)
+
+::: luna.screening.pithos
+    options:
+      members:
+        - PithosMIDB
+        - binarize
+
+---
+
+## Data Ingestion & Tile Pipeline (`luna.screening.candidate_gen`)
+
+::: luna.screening.candidate_gen
+    options:
+      members:
+        - DataIngestor
+

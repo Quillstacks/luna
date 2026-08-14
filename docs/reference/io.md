@@ -49,9 +49,28 @@ The `luna.io` package handles data fetching, PDS index lookups, NAC decoding, an
 
 ---
 
+## PDS Fetcher (`luna.io.pds_fetch`)
+
+::: luna.io.pds_fetch
+    options:
+      members:
+        - fetch_nac
+        - BandwidthLimiter
+
+---
+
 ## Kernel Fetcher (`luna.io.kernel_fetch`)
 
 ::: luna.io.kernel_fetch
     options:
       members:
         - ensure_kernels_for_date
+
+---
+
+## Mosaicking & Coverage Solver (`luna.io.coverage`)
+
+::: luna.io.coverage
+    options:
+      members:
+        - select_coverage_nacs
