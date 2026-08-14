@@ -22,8 +22,7 @@ All notable changes to the `luna` library are documented in this file.
 * **Problem**: For off-nadir observations (emission angle $> 5^\circ$), assuming a spherical lunar datum ($alt = 0\text{ m}$) caused horizontal parallax displacements of up to $500\text{ px}$ in deep basins (e.g., Marius Hills at elevation $-2010\text{ m}$).
 * **Fix**: Updated `ground_to_image(label_path, lon_deg, lat_deg, alt_m)`:
   - Added support for explicit ground elevation `alt_m` (e.g., from LOLA DEMs).
-  - Converted coordinates via planetocentric spherical conversion:
-    $$\vec{G}_{bf} = \text{sp.latrec}(R_{\text{moon}} + \text{alt\_km}, \text{lon\_rad}, \text{lat\_rad})$$
+  - Converted coordinates via planetocentric spherical conversion: $\vec{G}_{bf} = \text{sp.latrec}(R_{\text{moon}} + \text{alt\_km}, \text{lon\_rad}, \text{lat\_rad})$
   - Updated `image_to_ground` with `sp.reclat(point)` for robust reverse planetocentric lookups.
 
 #### 3. Ascending vs. Descending Orbit Handling

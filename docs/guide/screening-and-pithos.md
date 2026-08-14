@@ -1,66 +1,73 @@
 # Screening & Pithos Engine
 
-`luna.screening` implements a streaming architecture to parallelize tile extraction and search across large LROC NAC images ($\sim 5000 \times 52000$ pixels).
+`luna.screening` implements a high-throughput streaming architecture to parallelize tile extraction and search across large LROC NAC images ($\sim 5064 \times 52224$ pixels).
 
 ---
 
-## 1. Lock-Free Disruptor Ring Buffer
+## 1. Tile Slicing & Ingestion Pipeline
 
-The `DisruptorEngine` decouples disk I/O and tile extraction from GPU batch inference:
+The `DataIngestor` slices full-resolution LROC NAC strips into overlapping tiles ($256 \times 256\text{ px}$ with stride $192\text{ px}$):
 
 ```
-[ Disk / Memory-Mapped File ]
-          |
-          v (Zero-copy stripe slice)
-[ Disruptor Ring Buffer (Lock-Free) ]
-          |
-          v (Batch producer)
-[ GPU Tensor Batch Engine ]
+[ LROC NAC PDS3 Raster (~500 MB) ]
+          │
+          ▼ (Strided 256x256 window)
+[ Dynamic Batched Tensor Generator ]
+          │
+          ▼ (PyTorch DINOv3 ViT-S/16)
+[ 384-dimensional Float32 Embeddings ]
+          │
+          ▼ (Sequential ID mapping)
+[ Pithos PLAN Binary Index (.bin + _meta.pkl) ]
 ```
-
-- **Thread-safe**: Lock-free atomic sequence pointers.
-- **Batched I/O**: Slices image rows directly into pinned memory buffers.
 
 ---
 
-## 2. Native Pithos Binary Retrieval Index
+## 2. Native Pithos Model-Isomorphic Database (MIDB)
 
-`Pithos` is a C++ SIMD-accelerated binary embedding index:
+`Pithos` is an AOT-compiled native C/C++ library for SIMD-accelerated binary embedding indexing and search:
 
-1. **Embedding Binarization**:
-   Continuous 1024-dimensional DINOv3 vectors $\vec{v}$ are mapped to 1024-bit binary hashes:
+1. **PolarQuant-Hadamard Transform**:
+   Continuous 384-dimensional DINOv3 vectors $\vec{v}$ are transformed via a randomized sign vector $\vec{d}$ and the $384 \times 384$ Kronecker-Hadamard matrix $H_{384} = H_{12} \otimes H_{32}$:
 
-   $$b_i = \begin{cases} 1 & \text{if } v_i \ge 0 \\ 0 & \text{if } v_i < 0 \end{cases}$$
+$$\vec{u} = \frac{1}{\sqrt{384}} H_{384} (\vec{v} \odot \vec{d})$$
+
+$$b_i = \begin{cases} 1 & \text{if } u_i \ge 0 \\ 0 & \text{if } u_i < 0 \end{cases}$$
 
 2. **SIMD POPCOUNT Hamming Distance**:
-   Calculates bitwise distance via hardware `_mm_popcnt_u64`:
+   Calculates bitwise Hamming distance across 384 bits (6 64-bit words) via hardware `_mm_popcnt_u64`:
 
-   $$d_H(\vec{a}, \vec{b}) = \text{popcount}(\vec{a} \oplus \vec{b})$$
+$$d_H(\vec{a}, \vec{b}) = \sum_{k=0}^{5} \text{popcount}(a_k \oplus b_k)$$
 
-3. **Multi-Query Resonant Voting**:
-   Queries a set of known pit template anchors and accumulates votes across morphological variants.
+3. **Matryoshka Cascade Tiers**:
+   Evaluates distances in progressive tier stages ($64 \to 128 \to 256 \to 384$ bits) to early-exit non-matching background terrain.
+
+4. **Multi-Family Resonant Voting**:
+   Queries multiple morphological pit template families simultaneously and accumulates votes across matching candidates.
+
+### Python API Example
 
 ```python
 from luna.screening.pithos import PithosMIDB
 
-with PithosMIDB() as db:
-    db.load_index("M1118880788RC", "data/indices/pithos_M1118880788RC.bin")
-    ids, dists = db.batch_search("M1118880788RC", query_vectors, k=1000)
+# Access singleton Pithos instance
+db = PithosMIDB()
+
+# Search nearest neighbors against an index
+db.open_index("data/_scratch/indices/pithos_M1118880788RC.bin")
+results = db.search_knn(query_vectors_float32, k=1000)
 ```
 
 ---
 
 ## 3. Spatial Non-Maximum Suppression (NMS)
 
-Candidates are clustered using spatial Euclidean distance in detector pixel space ($512\text{ px}$ radius) to eliminate redundant detections across sliding window steps:
+Candidate hits are clustered using lunar surface distance to eliminate redundant overlapping detections:
 
 ```python
-nms_hits = pipeline._nms(
-    ranked_indices,
-    vote_map,
-    best_dist,
-    metadata,
-    top_k=100,
-    min_dist_px=512.0
-)
+from luna.pipeline import apply_lunar_spatial_nms
+
+# Apply spherical Haversine NMS on the Moon (radius = 150m)
+nms_hits = apply_lunar_spatial_nms(raw_hits, distance_threshold_meters=150.0)
 ```
+

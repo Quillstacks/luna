@@ -1,10 +1,10 @@
 # LUNA Pipeline Metrics API & Dashboard
 
-The `scripts/luna_analyze.py serve` command starts a local FastAPI server that exposes log metrics and a live Server-Sent Events (SSE) stream for tracking the LUNA pipeline. 
+The `python scripts/luna_analyze.py serve --port 8080` command starts a local FastAPI server that exposes log metrics and a live Server-Sent Events (SSE) stream for tracking the LUNA pipeline. 
 
-- **Default Endpoint:** `http://localhost:8000`
+- **Default Endpoint:** `http://localhost:8080`
 - **CORS:** Enabled (`allow_origins=["*"]`) for web dashboards (e.g., Nuxt running on `http://localhost:3000`).
-- **Interactive Swagger UI:** `http://localhost:8000/docs`
+- **Interactive Swagger UI:** `http://localhost:8080/docs`
 
 ---
 

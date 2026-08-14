@@ -34,31 +34,33 @@ To map a ground coordinate $(\lambda, \phi, alt)$ to detector pixel $(s, l)$:
 1. **Body-Fixed Coordinate Conversion**:
    Convert longitude $\lambda$ (rad), latitude $\phi$ (rad), and elevation $alt$ (km) into the body-fixed `IAU_MOON` rectangular vector $\vec{G}_{bf}$ via planetocentric spherical conversion:
 
-   $$\vec{G}_{bf} = \text{sp.latrec}(R_{\text{moon}} + alt, \lambda, \phi)$$
+$$\vec{G}_{bf} = \text{sp.latrec}(R_{\text{moon}} + alt, \lambda, \phi)$$
 
 2. **Look Vector Formulation**:
    For any trial Ephemeris Time $t \in [t_{\text{start}}, t_{\text{stop}}]$, rotate $\vec{G}_{bf}$ into J2000 and compute the spacecraft look vector:
 
-   $$\vec{r}_{\text{look, J2000}}(t) = \mathbf{R}_{\text{IAU\_MOON} \to \text{J2000}}(t) \cdot \vec{G}_{bf} - \vec{p}_{\text{sc, J2000}}(t)$$
+$$\vec{r}_{\text{look, J2000}}(t) = \mathbf{R}_{\text{IAU\_MOON} \to \text{J2000}}(t) \cdot \vec{G}_{bf} - \vec{p}_{\text{sc, J2000}}(t)$$
 
 3. **Camera Frame Projection**:
    Rotate the look vector into the camera frame:
 
-   $$\vec{u}_{\text{cam}}(t) = \mathbf{R}_{\text{J2000} \to \text{CAM}}(t) \cdot \vec{r}_{\text{look, J2000}}(t)$$
+$$\vec{u}_{\text{cam}}(t) = \mathbf{R}_{\text{J2000} \to \text{CAM}}(t) \cdot \vec{r}_{\text{look, J2000}}(t)$$
 
 4. **1D Root Finding (Bisection)**:
    The detector condition requires the camera $x$-component to vanish:
 
-   $$\text{Residual}(t) = \frac{u_{\text{cam}, x}(t)}{\|\vec{u}_{\text{cam}}(t)\|} = 0$$
+$$\text{Residual}(t) = \frac{u_{\text{cam}, x}(t)}{\|\vec{u}_{\text{cam}}(t)\|} = 0$$
 
    Because the orbit progresses monotonically over the exposure window ($\sim 10\text{--}30\text{ s}$), bisection converges to $< 10^{-9}\text{ s}$ in $\sim 30$ iterations.
 
 5. **Pixel Coordinates**:
    At the solved time $t^*$:
 
-   $$y_{\text{focal}} = f \cdot \frac{u_{\text{cam}, y}(t^*)}{u_{\text{cam}, z}(t^*)}$$
-   $$\text{Sample} = \text{BoresightSample} + \text{px\_per\_mm} \cdot y_{\text{focal}}$$
-   $$\text{Line} = \frac{t^* - t_{\text{start}}}{\text{LineRate}}$$
+$$y_{\text{focal}} = f \cdot \frac{u_{\text{cam}, y}(t^*)}{u_{\text{cam}, z}(t^*)}$$
+
+$$\text{Sample} = \text{BoresightSample} + \text{px\_per\_mm} \cdot y_{\text{focal}}$$
+
+$$\text{Line} = \frac{t^* - t_{\text{start}}}{\text{LineRate}}$$
 
 ---
 

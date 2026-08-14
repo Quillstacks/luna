@@ -8,39 +8,59 @@
 
 ```mermaid
 flowchart LR
-    Raw[Raw NAC Sub-Tile 256x256] --> DINO[DINOv3 ViT Backbone]
-    DINO --> Embedding[1024-d Latent Feature Vector]
-    Embedding --> Binarize[Sign Binarization / Hamming Hash]
-    Binarize --> PithosIndex[Pithos Fast Search]
-    PithosIndex --> Candidate[Candidate Region]
-    Candidate --> Stage2[Stage-2 Mask R-CNN & Refiner]
-    Stage2 --> Output[Segmented Lunar Pit Polygon & Confidence]
+    Raw["Raw NAC Sub-Tile 256x256"] --> DINO["DINOv3 ViT Backbone"]
+    DINO --> Embedding["384-d Latent Feature Vector"]
+    Embedding --> Binarize["PolarQuant-Hadamard Binarization"]
+    Binarize --> PithosIndex["Pithos SIMD Binary Search"]
+    PithosIndex --> Candidate["Candidate Region + NMS"]
+    Candidate --> Stage2["Stage-2 Dense Decoder & Physics Validator"]
+    Stage2 --> Output["Validated Pit Polygon, Depth & Confidence"]
 ```
 
 ---
 
-## 2. DINOv3 Feature Backbone
+## 2. DINOv3 Feature Backbone (`luna.models.dinov3.dino_encoder`)
 
-`luna` employs self-supervised Vision Transformers (DINOv3) pre-trained and fine-tuned on lunar terrain:
+`luna` employs Vision Transformers (DINOv3 ViT-S/16) pre-trained and fine-tuned with LoRA adapters on lunar terrain:
 
-- **Input**: Standardized $256 \times 256$ float32 reflectance patches.
-- **Output**: 1024-dimensional dense feature representation.
+- **Input**: Standardized $256 \times 256$ float32 reflectance patches (stride 192 px).
+- **Output**: 384-dimensional $L_2$-normalized Matryoshka feature representation (`DINO_DIM = 384`).
 - **Invariance**: Robust to illumination variation (phase angles from $15^\circ$ to $80^\circ$) and solar incidence.
+- **Attention Rollout**: Optional extraction of spatial self-attention maps from the last transformer block.
+
+### Python API Example
 
 ```python
-from luna.models.dinov3_encoder import DINOv3Encoder
+import numpy as np
+from luna.models.dinov3.dino_encoder import DINOEncoder
 
-encoder = DINOv3Encoder.from_pretrained("luna-dinov3-lunar-vit")
-features = encoder.extract_features(tile_tensor)
-print(f"Feature vector shape: {features.shape}")
+# Initialize encoder with local or HuggingFace LoRA adapters
+encoder = DINOEncoder(
+    lora_dir="luna/lunar-dinov3-lora",
+    model_size="vits16",
+    matryoshka_dim=384,
+)
+
+# Encode a batch of uint8 or float32 image tiles (B, H, W)
+tiles = np.random.randint(0, 255, size=(4, 256, 256), dtype=np.uint8)
+embeddings = encoder.encode(tiles)
+print(f"Embeddings shape: {embeddings.shape}")  # (4, 384)
 ```
 
 ---
 
-## 3. Stage-2 Dense Decoders & Refiners
+## 3. Stage-2 Dense Decoders & Physics Validation
 
-Candidate bounding boxes flagged by the screening engine are forwarded to a Stage-2 dense decoder for pixel-precise segmentation:
+Candidate bounding boxes flagged by the screening engine are forwarded to a Stage-2 dense decoder for pixel-precise segmentation and physics verification:
 
-- **Instance Segmentation**: Mask R-CNN with Feature Pyramid Networks (FPN).
-- **Geometric Ellipse Fitting**: Derives semimajor and semiminor axes, orientation angle, and rim sharpness.
-- **Illumination Consistency Check**: Rejects false-positive crater shadows by validating shadow vector alignment against sub-solar azimuth.
+- **Spatial Token Reconstruction (`GeometricReconstructor`)**: Reshapes flat ViT patch tokens back into 2D spatial feature representations.
+- **Feature Pyramid Network (`FeaturePyramidNetwork`)**: Progressively upsamples features with lateral connections to $256 \times 256$ resolution.
+- **Three-Class Segmentation (`ThreeClassSegmentationHead`)**:
+    1. Background Terrain ($C=0$)
+    2. Deep Shadow / Pit Void ($C=1$)
+    3. Sunlit Rim Collar ($C=2$)
+- **Physics-Based Illumination Validator (`PhysicsValidator`)**:
+    - Calculates the shadow vector direction $\theta_{\text{shadow}}$.
+    - Validates against the known sub-solar azimuth $\theta_{\text{sun}}$ ($|\Delta\theta| \le 45^\circ$).
+    - Estimates depth $d = L_{\text{shadow}} / \tan(\theta_{\text{incidence}})$ to reject shallow impact craters.
+
