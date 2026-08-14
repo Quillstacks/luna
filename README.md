@@ -1,6 +1,7 @@
 # luna
 
-Python library for lunar pit detection, feature extraction, and orbital imagery analysis on LROC Narrow Angle Camera (NAC) products.
+> **L.U.N.A.** — *Lots of Unexplained NAC Anomalies*  
+> Python library for lunar pit detection, feature extraction, and orbital photogrammetry on NASA LROC Narrow Angle Camera (NAC) products.
 
 `luna` provides end-to-end tools for ingesting PDS orbital imagery, evaluating multi-scale vision models (DINOv3, Stage-2 Dense Decoders, Mask R-CNN), mapping high-dimensional feature spaces via UMAP latent projections, and executing candidate screening pipelines.
 

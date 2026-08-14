@@ -1,6 +1,7 @@
 # LUNA
 
-**LUNA** (Lunar Pit Detection, SPICE Photogrammetry & Orbital Vision Library) is a high-performance Python framework for orbital lunar imagery analysis on NASA Lunar Reconnaissance Orbiter Camera (LROC) Narrow Angle Camera (NAC) products.
+> **L.U.N.A.** — *Lots of Unexplained NAC Anomalies*  
+> High-performance Python framework for lunar pit detection, SPICE photogrammetry & orbital vision on NASA LROC NAC imagery.
 
 ---
 
