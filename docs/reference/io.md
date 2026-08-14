@@ -55,7 +55,9 @@ The `luna.io` package handles data fetching, PDS index lookups, NAC decoding, an
     options:
       members:
         - fetch_nac
+        - get_pds_session
         - BandwidthLimiter
+        - DEFAULT_USER_AGENT
 
 ---
 

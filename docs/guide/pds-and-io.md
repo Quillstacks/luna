@@ -1,6 +1,6 @@
 # PDS Data Ingestion & I/O
 
-`luna.io` provides tools for indexing, downloading, and decoding LROC NAC products directly from the NASA Planetary Data System (PDS) archive.
+`luna.io` provides high-throughput tools for indexing, downloading, and decoding LROC NAC products directly from the NASA Planetary Data System (PDS) archive.
 
 ---
 
@@ -12,7 +12,8 @@ The LROC CDR archive is distributed across $\sim 35$ volumes (`LROLRC_1001` thro
 
 1. **Volume Characterization**: Fetches the first and last `PRODUCT_ID` of each volume index to determine bounding intervals.
 2. **Binary Search**: Performs logarithmic binary search over byte ranges in the matching volume's `INDEX.TAB`.
-3. **Local Cache**: Caches volume boundaries in `data/pds_volume_index_cdr.json`.
+3. **HTTP 429 Resiliency**: Range requests include automated exponential backoff (`1.0 * 2^attempt`) and `urllib3.util.Retry` adapters configured for status codes `429`, `500`, `502`, `503`, and `504`.
+4. **Local Cache**: Caches volume boundaries in `data/pds_volume_index_cdr.json`.
 
 ```python
 from luna.io.pds_index import PDSIndex
@@ -30,15 +31,30 @@ print(f"Emission angle: {geom['emission_angle']}°, Resolution: {geom['resolutio
 
 ---
 
-## 2. On-Demand CDR/EDR Fetching (`fetch_nac`)
+## 2. Resilient Product Fetching (`fetch_nac`)
 
-`fetch_nac` downloads the image raster (`.IMG`) and accompanying label (`.LBL` or detached headers) to local disk with checksum caching:
+`fetch_nac` downloads the calibrated image raster (`.IMG`) to local disk with streaming chunk validation, atomic renaming, and network retry handling:
+
+* **Atomic Writes**: Downloads stream into a temporary `.IMG.tmp` file and atomically replace it via `Path.replace()` once fully written, preventing corrupted partial files on disk.
+* **Direct URL Bypass**: When a direct archive URL is already known (e.g., from QuickMap metadata queries), pass `url=...` to bypass `INDEX.TAB` index lookups entirely.
+* **Session Pooling & User-Agents**: Uses `get_pds_session()` to maintain keep-alive connection pools and standard browser headers (overridable via `LUNA_USER_AGENT` environment variable or parameter).
+* **Bandwidth Limiter**: Optional `max_bandwidth_mbps` parameter enforces transfer speed limits via token-bucket algorithm to prevent saturating shared connections.
+* **Transient Error Retry**: Retries automatically on `ConnectionError`, `Timeout`, `ChunkedEncodingError`, and `HTTPError` (including `429 Too Many Requests` and `503 Service Unavailable`).
 
 ```python
-from luna.io.pds_fetch import fetch_nac
+from luna.io.pds_fetch import fetch_nac, get_pds_session
 
-# Downloads .IMG to data/_scratch/ with 1MB chunking and atomic rename
+# Standard fetch with binary index lookup
 img_path = fetch_nac("M1118880788RC", dest_dir="data/_scratch")
+
+# High-throughput fetch with explicit direct URL and 15 MB/s bandwidth limit
+direct_url = "https://pds.lroc.im-ldi.com/data/LRO-L-LROC-3-CDR-V1.0/LROLRC_1005/DATA/SCI/2010295/NAC/M142394466RC.IMG"
+img_path = fetch_nac(
+    "M142394466RC",
+    dest_dir="data/_scratch",
+    url=direct_url,
+    max_bandwidth_mbps=15.0,
+)
 ```
 
 ---

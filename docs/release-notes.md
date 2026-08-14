@@ -31,6 +31,34 @@ All notable changes to the `luna` library are documented in this file.
 
 ---
 
+### PDS Ingestion & Rate-Limit (HTTP 429) Resilience
+
+#### 1. Rate-Limit Handling & Exponential Backoff in `PDSIndex`
+* **Problem**: High-frequency HTTP range requests to volume `INDEX.TAB` endpoints occasionally triggered `HTTP 429 Too Many Requests` from NASA PDS / ASU LROC servers. Missing `429` status in retry lists caused unhandled `IndexError` exceptions during binary search lookups.
+* **Fix**:
+  - Added `429` to `urllib3.util.Retry` `status_forcelist` with `backoff_factor=0.5` and `respect_retry_after_header=False` to prevent extended thread blocking.
+  - Implemented exponential backoff in `PDSIndex._read_record` (up to 5 retries with `1.0 * 2^attempt` sleep) when reading range slices.
+
+#### 2. Transient HTTP Error Handling in `fetch_nac`
+* **Problem**: `fetch_nac` only caught network-level exceptions (`ConnectionError`, `Timeout`, `ChunkedEncodingError`), causing immediate failure on `r.raise_for_status()` when receiving transient `429` or `503` responses from CDN mirrors.
+* **Fix**: Added `requests.exceptions.HTTPError` to the transient error tuple, enabling automatic exponential backoff retries and temporary file cleanup across all HTTP gateway errors.
+
+#### 3. Session Pooling & User-Agent Customization
+* Added `get_pds_session(user_agent=...)` to maintain keep-alive connection pools across consecutive product downloads.
+* Introduced `DEFAULT_USER_AGENT` with support for `LUNA_USER_AGENT` environment variable overrides to prevent Cloudflare/WAF throttling on default Python `requests` headers.
+
+#### 4. Direct URL Bypass
+* Added `url` parameter to `fetch_nac`: When direct archive links are already resolved (e.g. from QuickMap or ASU metadata queries), `fetch_nac` bypasses the volume `INDEX.TAB` binary search entirely.
+
+#### 5. Bandwidth Limiting & Atomic Stream Writes
+* Added `BandwidthLimiter` (token-bucket algorithm) with `max_bandwidth_mbps` parameter to control network saturation during high-throughput downloads.
+* Hardened download stream with 1MB chunk buffers, differentiated socket timeouts `(connect_timeout, read_timeout)`, console progress bar redraw throttling (`mininterval=0.2s`), and atomic `.IMG.tmp` $\to$ `.IMG` replacement on completion.
+
+#### 6. Resilience Test Suite
+* Added automated unit test suite in `luna.tests.test_pds_resilience` covering range-read recovery, retry exhaustion, and HTTP error handling in `fetch_nac`.
+
+---
+
 ### Documentation & Developer Experience
 
 * **MkDocs Material Documentation System**:
