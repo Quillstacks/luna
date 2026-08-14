@@ -29,6 +29,13 @@ All notable changes to the `luna` library are documented in this file.
 * **Problem**: In `LinearProjection.from_nac_geometry`, corner mapping assumed Line 0 was always the Northern edge (`lat_top > lat_bot`). For ascending orbits (South-to-North passes), Line 0 is at the Southern edge, causing negative line offsets or solver divergence in `_solve_uv`.
 * **Fix**: Added automated flight-direction detection (`is_ascending`) by evaluating `start_lat`/`stop_lat`, `orbit_direction`, and comparing corner latitudes to ensure Line 0 ($v=0$) always maps to the start of exposure.
 
+#### 4. Automatic SPICE Kernel Resolution in `ground_to_image`
+* **Problem**: When performing multi-temporal ground-to-image projections across multiple LRO mission years (e.g. 2009–2026), `ground_to_image` threw `SPICE(SPKINSUFFDATA)` if the ephemeris (`.bsp`) or attitude (`.bc`) kernels for that observation date were not already present in the local cache.
+* **Fix**: `ground_to_image` now automatically invokes `ensure_kernels_for_date(start_dt, root=kernel_root)` before furnishing kernels:
+  - Enables zero-configuration ray-tracing on arbitrary NAC images from any mission phase without manual kernel pre-downloading.
+  - Thread-safe and idempotent: checks cached kernels in $O(1)$ disk stat checks and only contacts NASA NAIF when missing files are detected.
+  - Integrates with `furnish_kernels_for_date` to clear the active SPICE pool (`sp.kclear()`) between mission years, preventing CSPICE DAF handle table exhaustion.
+
 ---
 
 ### PDS Ingestion & Rate-Limit (HTTP 429) Resilience

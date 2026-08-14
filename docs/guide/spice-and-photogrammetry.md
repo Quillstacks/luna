@@ -82,6 +82,9 @@ $$\text{Line} = \frac{t^* - t_{\text{start}}}{\text{LineRate}}$$
 2. **`furnish_kernels(kernel_root)`**:
    - Preserved for high-throughput batch workloads within a single mission phase.
 
+3. **Automated On-Demand Fetching**:
+   - `ground_to_image` automatically invokes `ensure_kernels_for_date` before furnishing, querying the NAIF archive only for missing kernels and skipping cached files in $O(1)$ time.
+
 ```python
 from datetime import datetime, timezone
 from luna.io.spice_project import furnish_kernels_for_date
