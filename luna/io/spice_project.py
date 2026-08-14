@@ -221,9 +221,8 @@ def ground_to_image(
         Optional root directory of SPICE kernels.
     """
     label_path = Path(label_path)
+    ensure_kernels_for_label(label_path, kernel_root=kernel_root)
     lbl = pvl.load(str(label_path))
-    start_dt = lbl["START_TIME"].replace(tzinfo=None)
-    furnish_kernels_for_date(start_dt, kernel_root)
 
     pid = str(lbl["PRODUCT_ID"])
     side = _nac_side_from_pid(pid)
