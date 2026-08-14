@@ -38,8 +38,8 @@ flowchart TD
     subgraph Pipeline["ML & Screening Pipeline"]
         Reader --> RingBuffer["Lock-Free Disruptor Ring"]
         RingBuffer --> DINO["DINOv3 Feature Encoder"]
-        DINO --> Pithos["Native Pithos Binary Index"]
-        Pithos --> NMS["Spatial 512px NMS Filtering"]
+        DINO --> Pithos["pithosdb Vector Index"]
+        Pithos --> NMS["Spatial Lunar NMS Filtering"]
         NMS --> Candidates["Lunar Pit Candidates"]
     end
 
@@ -58,13 +58,13 @@ flowchart TD
 from luna.io.pds_fetch import fetch_nac
 from luna.io.spice_project import ground_to_image
 
-# 1. Fetch NAC product and label on-demand from PDS
-label_path, image_path = fetch_nac("M1118880788RC")
+# 1. Fetch NAC product on-demand from PDS
+img_path = fetch_nac("M1118880788RC", dest_dir="data/_scratch")
 
 # 2. Project lunar ground coordinates (lon, lat, elevation) to exact pixel coordinates
 # Example: Marius Hills Skylight (alt = -2010 m relative to lunar sphere)
 sample_px, line_px = ground_to_image(
-    label_path,
+    img_path,
     lon_deg=303.228,
     lat_deg=14.091,
     alt_m=-2010.0
@@ -80,5 +80,5 @@ print(f"Target pixel coordinate: Sample = {sample_px:.2f}, Line = {line_px:.2f}"
 - [**Installation Guide**](getting-started/installation.md): Set up virtual environment, GPU dependencies, and SPICE kernels.
 - [**SPICE & Photogrammetry Guide**](guide/spice-and-photogrammetry.md): Deep dive into CSPICE kernel pool limits, pushbroom camera geometry, topography parallax, and ascending orbit math.
 - [**Vision & Models Guide**](guide/vision-and-models.md): DINOv3 feature backbones and Stage-2 decoders.
-- [**Screening & Pithos Guide**](guide/screening-and-pithos.md): Multi-scale binary indexing and ring-buffer streaming.
+- [**Screening & Streaming Guide**](guide/screening-and-pithos.md): Multi-scale binary indexing and ring-buffer streaming.
 - [**API Reference**](reference/io.md): Comprehensive module and class documentation.

@@ -37,8 +37,8 @@ print(f"Emission angle: {geom['emission_angle']}°, Resolution: {geom['resolutio
 ```python
 from luna.io.pds_fetch import fetch_nac
 
-# Downloads both .IMG and .LBL to data/_scratch/ if not already present
-lbl_path, img_path = fetch_nac("M1118880788RC", dest_dir="data/_scratch")
+# Downloads .IMG to data/_scratch/ with 1MB chunking and atomic rename
+img_path = fetch_nac("M1118880788RC", dest_dir="data/_scratch")
 ```
 
 ---
@@ -52,6 +52,7 @@ $$I/F = \text{DN} \cdot \text{SCALING\_FACTOR} + \text{OFFSET}$$
 Null pixels and instrument saturations ($\le -32768$) are converted to `np.nan`:
 
 ```python
+import numpy as np
 from luna.io.nac_reader import read_nac
 
 nac = read_nac("data/_scratch/M1118880788RC.IMG", geometry=True)
