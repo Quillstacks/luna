@@ -98,10 +98,9 @@ def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
     """
     import time
 
-    # Disguise requests traffic as a modern desktop browser
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    # Standardized desktop browser headers from pds_fetch
+    from .pds_fetch import DEFAULT_HEADERS
+    headers = DEFAULT_HEADERS
     
     params = {
         "_xtype": "text/plain",

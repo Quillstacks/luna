@@ -1,83 +1,124 @@
-# luna
+# LUNA
 
-Python library for lunar pit detection, feature extraction, and orbital imagery analysis on LROC Narrow Angle Camera (NAC) products.
+> Python library for lunar planetary photogrammetry, NASA PDS data access, and vision model inference on Lunar Reconnaissance Orbiter Camera (LROC) NAC imagery.
 
-`luna` provides end-to-end tools for ingesting PDS orbital imagery, evaluating multi-scale vision models (DINOv3, Stage-2 Dense Decoders, Mask R-CNN), mapping high-dimensional feature spaces via UMAP latent projections, and executing candidate screening pipelines.
+`luna` provides standalone photogrammetry without requiring external USGS ISIS3 dependencies, resilient on-demand NASA Planetary Data System (PDS) downloads, DINOv3 feature representations, and candidate screening engines.
+
+---
 
 ## Installation
 
+### Core Installation (Lightweight, no PyTorch required)
+For pure photogrammetry, SPICE ray-tracing, LOLA elevation lookups, and PDS downloads:
 ```bash
-uv venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install -e ".[dev,dashboard]"
+pip install luna
 ```
 
-Requires Python >= 3.10. PyTorch and CUDA dependencies should be pre-installed according to your environment and hardware specifications.
+### Modular Extras
+Install specialized capabilities based on your workload:
+```bash
+# Vision Transformers & Deep Learning (DINOv3, Stage-2 Decoders, LoRA)
+pip install "luna[ml]"
 
-## Core Features and Architecture
+# Geospatial & Vector Geometry (Shapely, Rasterio, PyProj)
+pip install "luna[geo]"
 
-The library is organized into specialized submodules for data ingestion, model inference, screening protocols, and latent analysis:
+# Latent Manifold Learning & Topological Analysis (UMAP, Scikit-Learn)
+pip install "luna[analysis]"
 
-- `luna.io`: PDS archive resolution, LROC NAC reader, SPICE kernel fetcher, and coordinate projection utilities (`ground_to_image`).
-- `luna.models`: DINOv3 feature encoders, Stage-2 dense prediction decoders, and multi-scale embedding refiners.
-- `luna.screening`: Candidate generation, multi-family resonant voting, and candidate filtering protocols (`pithos`).
-- `luna.storage`: Vector and metadata indexing engines (`FaissStore`, `PithosStore`).
-- `luna.latent_map`: Manifold representation, topology analysis, parametric UMAP projection, and interactive feature space inspection.
-- `luna.labels`: Catalog parsers for the Wagner & Robinson Lunar Pit Atlas (LPA) and rasterized geometric ground-truth labels.
+# Interactive Web Dashboard (Dash, Datashader)
+pip install "luna[dashboard]"
+
+# Complete Monolithic Installation
+pip install "luna[all]"
+```
+
+---
+
+## Core Features
+
+- **Pure-Python SPICE Photogrammetry (`luna.io`)**: Sub-pixel pushbroom ray-tracing (`ground_to_image`, `image_to_ground`) via `spiceypy` with automated LOLA DEM parallax correction and ascending/descending orbit detection.
+- **PDS Index & Resilient Ingestion (`luna.io`)**: Instant binary search over remote PDS `INDEX.TAB` archives, connection pooling, token-bucket bandwidth limiting, and automatic HTTP 429/503 retry resilience.
+- **On-Demand SPICE Kernel Management**: Automatic discovery and downloading of NAIF kernels per observation timestamp, avoiding CSPICE DAF handle table exhaustion.
+- **Vision Transformers (`luna.models`)**: DINOv3 ViT-S/16 feature backbones with Matryoshka representations and Stage-2 dense decoders.
+- **Candidate Screening Engine (`luna.screening`)**: High-throughput candidate extraction and native C++ binary Hamming index integration (`pithosdb`).
+- **Latent Manifold Analysis (`luna.latent_map`)**: Parametric UMAP projections and morphological topology metrics.
+
+---
 
 ## Quickstart
 
-### Data Ingestion and SPICE Projection
-
-Fetch LROC NAC products and project surface coordinates to image pixel coordinates:
+### 1. PDS Ingestion & SPICE Coordinate Ray-Tracing
+Download an LROC NAC product and map lunar surface coordinates (longitude, latitude, elevation) to exact detector pixel coordinates:
 
 ```python
 from luna.io.pds_fetch import fetch_nac
 from luna.io.spice_project import ground_to_image
 
-# Fetch NAC product
-label_path, image_path = fetch_nac("M1118880788RC")
+# 1. Fetch calibrated NAC .IMG on-demand from NASA PDS
+img_path = fetch_nac("M1118880788RC", dest_dir="data/_scratch")
 
-# Convert ground coordinates (longitude, latitude) to image pixels
-pixel_x, pixel_y = ground_to_image(label_path, lon=87.599, lat=58.6979)
+# 2. Project lunar ground coordinates to detector pixel coordinates (sample, line)
+# Example: Marius Hills Skylight (alt = -2010 m relative to lunar sphere)
+sample_px, line_px = ground_to_image(
+    img_path,
+    lon_deg=303.228,
+    lat_deg=14.091,
+    alt_m=-2010.0
+)
+print(f"Target pixel coordinate: Sample = {sample_px:.2f}, Line = {line_px:.2f}")
 ```
 
-### Screening and Candidate Generation
-
-Run candidate screening across orbital images:
+### 2. High-Speed PDS Archive Index Resolution
+Resolve any NAC product ID to its NASA PDS URL in $< 50\text{ ms}$ without downloading whole index volumes:
 
 ```python
-from luna.screening.pithos import PithosScreener
+from luna.io.pds_index import PDSIndex
 
-screener = PithosScreener()
-candidates = screener.process_product("M1118880788RC")
+idx = PDSIndex()
+url = idx.url_for("M1118880788RC")
+geom = idx.geometry_for("M1118880788RC")
+
+print(f"PDS URL: {url}")
+print(f"Resolution: {geom['resolution']} m/px, Incidence Angle: {geom['incidence_angle']}°")
 ```
 
-### Latent Feature Mapping
+### 3. Fast Image Reading & Calibrated Reflectance ($I/F$)
+```python
+import numpy as np
+from luna.io.nac_reader import read_nac
 
-Export and inspect UMAP projections of DINOv3 feature embeddings:
-
-```bash
-python -m luna.latent_map.cli --input data/embeddings/ --output data/latent_map.json
+nac = read_nac("data/_scratch/M1118880788RC.IMG", geometry=True)
+print(f"Dimensions: {nac.samples} x {nac.lines} px")
+print(f"Mean valid reflectance (I/F): {np.nanmean(nac.pixels):.4f}")
 ```
 
-## Directory Layout
+---
 
-- `luna/`: Core Python library package.
-  - `io/`: Data fetching, PDS index handling, SPICE coordinate transformations.
-  - `models/`: DINOv3 encoders, Stage-2 dense decoders, and refiners.
-  - `screening/`: Screening algorithms and candidate generation logic.
-  - `storage/`: Vector storage backends (FAISS, Pithos metadata).
-  - `latent_map/`: Topology math, manifold analysis, and UMAP visualizers.
-- `scripts/`: Execution scripts for model training, dataset conversion, evaluation, and dashboard servers.
-- `docs/`: API documentation and workflow reference guides.
-- `catalogs/`: Lunar Pit Atlas snapshots and product lookup tables.
+## Package Architecture
 
-## Data Sources
+```
+luna/
+├── io/               # PDS index resolver, streaming fetcher, SPICE photogrammetry, NAC reader
+├── models/           # DINOv3 vision transformer, Stage-2 decoder, LoRA adapters [luna[ml]]
+├── screening/        # Candidate screening, ring-buffer disruptor, Pithos binary search
+├── storage/          # Vector indexing backends (FAISS, PithosStore)
+├── latent_map/       # Latent space manifold learning, parametric UMAP, topology analyzer
+├── labels/           # Lunar Pit Atlas (LPA) catalog parser & ground truth loaders
+├── geometry.py       # Bilinear approximations and coordinate utilities
+├── pipeline.py       # High-level end-to-end scanning pipeline [luna[ml]]
+└── _compat.py        # Dependency checking and lazy loading utilities
+```
 
-- LROC NAC CDR/EDR: NASA Planetary Data System (PDS) LROC Node.
-- SPICE Kernels: NASA NAIF LRO ephemeris and attitude archive.
-- Lunar Pit Atlas (LPA): Cataloged pit locations and dimensions.
+---
+
+## Data Sources & Attributions
+
+- **LROC NAC Imagery**: NASA Planetary Data System (PDS) Imaging Node / ASU LROC.
+- **Ephemeris & Attitude**: NASA NAIF LRO SPICE Kernel Archive.
+- **Lunar Pit Atlas (LPA)**: Wagner & Robinson (2014, 2021) catalog.
+
+---
 
 ## License
 

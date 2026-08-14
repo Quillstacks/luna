@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from tqdm import tqdm
 
 from .pds_index import PDSIndex, _normalize_product_id
@@ -41,18 +43,33 @@ _index: Optional[PDSIndex] = None
 _session: Optional[requests.Session] = None
 
 
+def _configure_pds_session(session: requests.Session, headers: dict[str, str]) -> requests.Session:
+    session.headers.update(headers)
+    retries = Retry(
+        total=5,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD"],
+        respect_retry_after_header=False,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
 def get_pds_session(user_agent: Optional[str] = None) -> requests.Session:
-    """Creates or returns a configured requests.Session with proper User-Agent and connection pooling."""
+    """Creates or returns a configured requests.Session with proper User-Agent, retries, and connection pooling."""
     global _session
     if user_agent is not None:
         s = requests.Session()
         headers = dict(DEFAULT_HEADERS)
         headers["User-Agent"] = user_agent
-        s.headers.update(headers)
-        return s
+        return _configure_pds_session(s, headers)
     if _session is None:
         _session = requests.Session()
-        _session.headers.update(DEFAULT_HEADERS)
+        _configure_pds_session(_session, DEFAULT_HEADERS)
     return _session
 
 

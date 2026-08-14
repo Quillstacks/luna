@@ -114,7 +114,7 @@ class PDSIndex:
 
     def __init__(
         self,
-        base_url: str = None,
+        base_url: Optional[str] = None,
         cache_path: Optional[Path | str] = None,
         session: Optional[requests.Session] = None,
         archive: str = "CDR",
@@ -122,21 +122,8 @@ class PDSIndex:
         if session is not None:
             self.session = session
         else:
-            self.session = requests.Session()
-            self.session.headers.update({
-                "User-Agent": "Luna-PDS-Tool/1.0 (DHBW-Research; Academic)"
-            })
-            retries = Retry(
-                total=5, 
-                backoff_factor=0.5, 
-                status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["GET", "HEAD"],
-                respect_retry_after_header=False,
-                raise_on_status=False
-            )
-            adapter = HTTPAdapter(max_retries=retries)
-            self.session.mount('http://', adapter)
-            self.session.mount('https://', adapter)
+            from .pds_fetch import get_pds_session
+            self.session = get_pds_session()
 
         self.archive = archive.upper()
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")
