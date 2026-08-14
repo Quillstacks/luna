@@ -2,10 +2,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
-build/
-.ipynb_checkpoints/
-.python-version
-*.ipynb
+# Build & Documentation Artifacts
+site/
 
 # Large artifacts — never track
 data/

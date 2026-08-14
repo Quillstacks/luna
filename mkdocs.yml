@@ -1,0 +1,93 @@
+site_name: luna
+site_description: High-Performance Lunar Pit Detection, SPICE Photogrammetry & Orbital Vision Library
+site_author: LUNA Team
+repo_url: https://github.com/Quillstacks/luna
+repo_name: Quillstacks/luna
+
+theme:
+  name: material
+  palette:
+    # Palette toggle for dark mode (default)
+    - scheme: slate
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    # Palette toggle for light mode
+    - scheme: default
+      primary: teal
+      accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_root_heading: true
+            show_source: true
+            heading_level: 2
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.arithmatex:
+      generic: true
+  - tables
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Overview: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quickstart: getting-started/quickstart.md
+  - Core Guides & Physics:
+      - SPICE & Photogrammetry: guide/spice-and-photogrammetry.md
+      - PDS Data & Ingestion: guide/pds-and-io.md
+      - Vision Models & Encoders: guide/vision-and-models.md
+      - Screening & Pithos Engine: guide/screening-and-pithos.md
+      - Latent Mapping & Manifolds: guide/latent-mapping.md
+  - Tutorials & Operations:
+      - End-to-End Pit Detection: tutorials/pit-detection-pipeline.md
+      - Metrics API & Dashboard: tutorials/api-server.md
+  - API Reference:
+      - luna.io: reference/io.md
+      - luna.models: reference/models.md
+      - luna.screening: reference/screening.md
+      - luna.storage: reference/storage.md
+      - luna.pipeline: reference/pipeline.md
