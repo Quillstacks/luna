@@ -59,42 +59,51 @@ _FURNISHED: set[str] = set()
 _LOADED_WINDOW: tuple[datetime, datetime] | None = None
 
 
-def furnish_kernels(kernel_root: Path | str | None = None) -> int:
-    """Load every SPICE kernel under ``kernel_root`` into the CSPICE kernel pool.
-
-    Recursively discovers and loads all NAIF kernel files (`.tls`, `.tsc`, `.tpc`,
-    `.bpc`, `.tf`, `.ti`, `.bsp`, `.bc`). The function is idempotent — repeated
-    calls skip kernels that are already loaded in the pool.
-
-    Note:
-        Preserved for single-phase batch operations. When processing images
-        across multiple mission years, use :func:`furnish_kernels_for_date`
-        instead to prevent CSPICE DAF handle table overflow.
-
-    Args:
-        kernel_root: Root directory of SPICE kernels. Defaults to
-            ``data/spice/lro``.
-
-    Returns:
-        Total number of kernels currently loaded in the SPICE pool.
-
-    Example:
-        >>> from luna.io.spice_project import furnish_kernels
-        >>> total = furnish_kernels()
-        >>> print(f"Loaded {total} kernels")
+def furnish_kernels(kernel_paths: list[Path] | Path | str | None = None) -> int:
+    """Load SPICE kernels into the CSPICE kernel pool.
+    
+    If a list of Paths is passed, loads only those kernels. If a root directory
+    is passed (or None), recursively discovers and loads all kernels under the root.
     """
+    import spiceypy as sp
     global _LOADED_WINDOW
-    root = Path(kernel_root or DEFAULT_KERNEL_ROOT)
-    exts = ("tls", "tsc", "tpc", "bpc", "tf", "ti", "bsp", "bc")
-    for ext in exts:
-        for f in sorted(glob.glob(str(root / "**" / f"*.{ext}"), recursive=True)):
-            if f not in _FURNISHED:
-                sp.furnsh(f)
-                _FURNISHED.add(f)
+
+    if isinstance(kernel_paths, (list, tuple, set)):
+        for f in kernel_paths:
+            f_str = str(f)
+            if f_str not in _FURNISHED:
+                try:
+                    sp.furnsh(f_str)
+                    _FURNISHED.add(f_str)
+                except Exception as e:
+                    log.warning("Failed to furnish %s: %s", f_str, e)
+    else:
+        root = Path(kernel_paths or DEFAULT_KERNEL_ROOT)
+        exts = ("tls", "tsc", "tpc", "bpc", "tf", "ti", "bsp", "bc")
+        for ext in exts:
+            for f in sorted(glob.glob(str(root / "**" / f"*.{ext}"), recursive=True)):
+                if f not in _FURNISHED:
+                    sp.furnsh(f)
+                    _FURNISHED.add(f)
+
     _LOADED_WINDOW = None
     total = sp.ktotal("ALL")
     log.debug("kernel pool: %d loaded", total)
     return total
+
+
+def ensure_kernels_for_label(label_path: Path | str, kernel_root: Path | str | None = None) -> list[Path]:
+    """Make sure all SPICE kernels needed to project from ``label_path`` are present.
+
+    Looks up the NAC START_TIME, runs :func:`luna.io.kernel_fetch.ensure_kernels_for_date`,
+    then furnishes exactly those kernels.
+    """
+    from .kernel_fetch import ensure_kernels_for_date  # local import to avoid cycles
+    lbl = pvl.load(str(label_path))
+    start_dt = lbl["START_TIME"].replace(tzinfo=None)
+    kernel_paths = ensure_kernels_for_date(start_dt, root=kernel_root)
+    furnish_kernels(kernel_paths)
+    return kernel_paths
 
 
 def furnish_kernels_for_date(
@@ -383,7 +392,10 @@ def image_to_ground(
     
     try:
         point, _, _ = sp.sincpt("Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", p["frame"], look_cam)
-        _, lon_rad, lat_rad = sp.reclat(point)
+        radii = sp.bodvrd("MOON", "RADII", 3)[1]
+        re_km, rp_km = float(radii[0]), float(radii[2])
+        f_body = (re_km - rp_km) / re_km
+        lon_rad, lat_rad, _ = sp.recgeo(point, re_km, f_body)
         lon_deg = float(np.rad2deg(lon_rad)) % 360.0
         return lon_deg, float(np.rad2deg(lat_rad))
     except Exception:

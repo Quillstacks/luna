@@ -105,6 +105,10 @@ docs = [
     "pymdown-extensions>=10.7.0",
 ]
 
+[project.scripts]
+luna-verify-physics = "luna.easter_egg.verify_physics:main"
+luna-render-tufte = "luna.easter_egg.render_tufte:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["luna", "luna.*"]
@@ -112,6 +116,7 @@ include = ["luna", "luna.*"]
 [tool.setuptools.package-data]
 luna = [
     "py.typed",
+    "easter_egg/data/*",
 ]
 
 [tool.pytest.ini_options]

@@ -108,14 +108,22 @@ def _download_one(url: str, dest: Path, session: requests.Session) -> tuple[str,
     if dest.exists() and dest.stat().st_size > 0:
         return str(dest), True, dest.stat().st_size
     dest.parent.mkdir(parents=True, exist_ok=True)
-    r = session.get(url, timeout=600, verify=False, stream=True)
-    if r.status_code != 200:
+    temp_dest = dest.with_suffix(".tmp")
+    try:
+        r = session.get(url, timeout=10, verify=False, stream=True)
+        if r.status_code != 200:
+            return url, False, 0
+        with open(temp_dest, "wb") as f:
+            for chunk in r.iter_content(1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+        temp_dest.rename(dest)
+        return url, True, dest.stat().st_size
+    except Exception as e:
+        if temp_dest.exists():
+            temp_dest.unlink()
+        log.warning("Download failed for %s: %s", url, e)
         return url, False, 0
-    with open(dest, "wb") as f:
-        for chunk in r.iter_content(1024 * 1024):
-            if chunk:
-                f.write(chunk)
-    return url, True, dest.stat().st_size
 
 
 def ensure_kernels_for_date(

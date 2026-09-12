@@ -138,22 +138,32 @@ class DINOEncoder:
         self.model = self._attach_lora(lora_dir)
         self.model.to(self.device)
         self.model.eval()
+        if hasattr(self, "proj_head") and self.proj_head is not None:
+            self.proj_head.to(self.device)
+            self.proj_head.eval()
+
         if self.device.type == "cuda":
             log.info(f"Switching DINOv3 to FP16 precision on {self.device.type}...")
             self.model = self.model.half()
+            if hasattr(self, "proj_head") and self.proj_head is not None:
+                self.proj_head = self.proj_head.half()
+            log.info("Compiling DINOv3 with torch.compile (max-autotune) for Blackwell Tensor Cores...")
+            try:
+                self.model = torch.compile(self.model, mode="max-autotune")
+            except Exception as e:
+                log.warning(f"Failed to compile model: {e}")
         elif self.device.type == "mps":
             log.info(f"Keeping DINOv3 in FP32 precision on MPS (FP16 causes dtype mismatch with Stage-2 decoder)")
 
         # Keep a direct reference to the raw backbone for inference.
-        # Newer peft versions route model(x) through a text-model forward that
-        # injects `input_ids`, which DINOv3's forward_features() doesn't accept.
-        # Calling backbone.forward_features() directly avoids this entirely while
-        # still benefiting from LoRA adapter weights applied in-place.
         try:
             self._backbone_module = self.model.base_model.model
         except AttributeError:
             self._backbone_module = self.backbone
 
+        dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+        self._norm_mean = torch.tensor([0.485, 0.456, 0.406], device=self.device, dtype=dtype).view(1, 3, 1, 1)
+        self._norm_std = torch.tensor([0.229, 0.224, 0.225], device=self.device, dtype=dtype).view(1, 3, 1, 1)
         self.normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225],
@@ -188,54 +198,144 @@ class DINOEncoder:
         log.info(f"Loading LoRA adapters from {lora_path_str}...")
         
         try:
-            return PeftModel.from_pretrained(self.backbone, lora_path_str)
+            model = PeftModel.from_pretrained(self.backbone, lora_path_str)
+            log.info("Merging LoRA weights into base model to enable full torch.compile graph fusion...")
+            return model.merge_and_unload()
         except Exception as e:
             log.error(f"Failed to load LoRA from {lora_path_str}: {e}. Falling back to base model.")
             return self.backbone
 
+    def dual_scale_pooling(
+        self,
+        patch_tokens: torch.Tensor,
+        top_ratio: float = 0.10,
+        use_proj_head: bool = True,
+        dim: int | None = None,
+    ) -> torch.Tensor:
+        """
+        Dual-scale pooling combining Global Average Pooling (GAP) and Top-Salient token mean.
+        
+        Args:
+            patch_tokens: Tensor of shape (B, N_patches, D), from forward_features
+            top_ratio: Fraction of tokens with highest L2 norm to average (default 0.10)
+            use_proj_head: If True and proj_head is present, projects gap and salient through proj_head
+            dim: Output dimension for each branch when using proj_head (default self.matryoshka_dim)
+            
+        Returns:
+            L2-normalized fused tensor of shape (B, 2 * out_dim).
+        """
+        # 1. Macro-Terrain Context (GAP)
+        gap = patch_tokens.mean(dim=1)
+
+        # 2. Micro-Edge Transition (Top-10% L2-Norm Tokens)
+        norms = torch.norm(patch_tokens, p=2, dim=-1)  # (B, N)
+        k_top = max(1, int(top_ratio * patch_tokens.shape[1]))
+        _, topk_indices = torch.topk(norms, k=k_top, dim=1)
+        topk_expanded = topk_indices.unsqueeze(-1).expand(-1, -1, patch_tokens.shape[-1])
+        salient = torch.gather(patch_tokens, 1, topk_expanded).mean(dim=1)
+
+        target_dim = dim if dim is not None else self.matryoshka_dim
+
+        proj = getattr(self, "proj_head", None)
+        if use_proj_head and proj is not None:
+            gap = proj(gap, dim=target_dim)
+            salient = proj(salient, dim=target_dim)
+        elif use_proj_head and target_dim < gap.shape[1]:
+            gap = gap[:, :target_dim]
+            salient = salient[:, :target_dim]
+
+        gap = F.normalize(gap.float(), p=2, dim=-1)
+        salient = F.normalize(salient.float(), p=2, dim=-1)
+
+        fused = torch.cat([gap, salient], dim=-1)
+        return F.normalize(fused, p=2, dim=-1)
+
     @torch.inference_mode()
-    def encode(self, batch: np.ndarray, return_attention: bool = False) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    def encode(
+        self,
+        batch: np.ndarray | torch.Tensor,
+        return_attention: bool = False,
+        pooling: str = "dual_scale",
+        top_ratio: float = 0.10,
+        use_proj_head: bool = True,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """
         Encode a batch of grayscale or RGB images into L2-normalized embeddings.
         
         Args:
-            batch: Input images as numpy array, shape (B, H, W) or (B, C, H, W), dtype uint8
+            batch: Input images as numpy array or tensor, shape (B, H, W) or (B, C, H, W)
             return_attention: If True, also return attention rollout map
+            pooling: Pooling mode ("dual_scale", "gap", "mtp", "cls")
+            top_ratio: Top salient token fraction if pooling="dual_scale"
+            use_proj_head: Whether to apply Matryoshka projection head
             
         Returns:
-            If return_attention is False: embeddings array of shape (B, matryoshka_dim)
-            If return_attention is True: tuple of (embeddings, attention_map) where attention_map
-                is shape (B, num_patches+1, num_patches+1) resized to (B, H, W)
+            If return_attention is False: embeddings array of shape (B, out_dim)
+            If return_attention is True: tuple of (embeddings, attention_map)
         """
         if self.device.type == "cuda":
             tensor_dtype = torch.float16
         else:
             tensor_dtype = torch.float32
 
-        if batch.ndim == 3:
-            tensor = torch.from_numpy(batch).unsqueeze(1).to(device=self.device, dtype=tensor_dtype)
-        elif batch.ndim == 4:
-            tensor = torch.from_numpy(batch).to(device=self.device, dtype=tensor_dtype)
+        if isinstance(batch, torch.Tensor):
+            tensor = batch.to(device=self.device, dtype=tensor_dtype, non_blocking=True)
+            if tensor.ndim == 3:
+                tensor = tensor.unsqueeze(1)
         else:
-            raise ValueError(f"Expected batch shape (B, H, W) or (B, C, H, W), got {batch.shape}")
+            if batch.ndim == 3:
+                tensor = torch.from_numpy(batch).unsqueeze(1).to(device=self.device, dtype=tensor_dtype, non_blocking=True)
+            elif batch.ndim == 4:
+                tensor = torch.from_numpy(batch).to(device=self.device, dtype=tensor_dtype, non_blocking=True)
+            else:
+                raise ValueError(f"Expected batch shape (B, H, W) or (B, C, H, W), got {batch.shape}")
         
-        if batch.dtype == np.uint8:
+        if getattr(batch, "dtype", None) == np.uint8 or getattr(batch, "dtype", None) == torch.uint8:
             tensor = tensor / 255.0
 
         if tensor.shape[1] == 1:
-            tensor = tensor.repeat(1, 3, 1, 1)
+            tensor = tensor.expand(-1, 3, -1, -1)
 
-        tensor = self.normalize(tensor)
+        tensor = (tensor - self._norm_mean) / self._norm_std
         
         if return_attention:
             return self._encode_with_attention(tensor)
         
-        features = self._backbone_module.forward_features(tensor)["x_norm_clstoken"]
+        features_dict = self._backbone_module.forward_features(tensor)
+        patch_tokens = features_dict["x_norm_patchtokens"]
 
-        if self.matryoshka_dim < features.shape[1]:
-            features = features[:, : self.matryoshka_dim]
-
-        return F.normalize(features, p=2, dim=-1).cpu().float().numpy()
+        proj = getattr(self, "proj_head", None)
+        if pooling == "dual_scale":
+            fused = self.dual_scale_pooling(
+                patch_tokens,
+                top_ratio=top_ratio,
+                use_proj_head=use_proj_head,
+                dim=self.matryoshka_dim,
+            )
+            return fused.cpu().numpy()
+        elif pooling == "gap":
+            features = patch_tokens.mean(dim=1)
+            if use_proj_head and proj is not None:
+                features = proj(features, dim=self.matryoshka_dim)
+            elif use_proj_head and self.matryoshka_dim < features.shape[1]:
+                features = features[:, : self.matryoshka_dim]
+            return F.normalize(features.float(), p=2, dim=-1).cpu().numpy()
+        elif pooling == "mtp":
+            features = patch_tokens.max(dim=1)[0]
+            if use_proj_head and proj is not None:
+                features = proj(features, dim=self.matryoshka_dim)
+            elif use_proj_head and self.matryoshka_dim < features.shape[1]:
+                features = features[:, : self.matryoshka_dim]
+            return F.normalize(features.float(), p=2, dim=-1).cpu().numpy()
+        elif pooling == "cls":
+            features = features_dict["x_norm_clstoken"]
+            if use_proj_head and proj is not None:
+                features = proj(features, dim=self.matryoshka_dim)
+            elif use_proj_head and self.matryoshka_dim < features.shape[1]:
+                features = features[:, : self.matryoshka_dim]
+            return F.normalize(features.float(), p=2, dim=-1).cpu().numpy()
+        else:
+            raise ValueError(f"Unknown pooling method: {pooling}")
     
     @torch.inference_mode()
     def _encode_with_attention(self, tensor: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:

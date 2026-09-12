@@ -142,8 +142,14 @@ class PDSIndex:
         if session is not None:
             self.session = session
         else:
-            from .pds_fetch import get_pds_session
-            self.session = get_pds_session()
+            import httpx
+            headers = {
+                "User-Agent": "Luna-Planetary-Research/3.0 (Academic Research; NASA LROC Science Ingestion; contact: planetary-science-team)",
+                "Accept": "*/*",
+            }
+            limits = httpx.Limits(max_connections=32, max_keepalive_connections=16, keepalive_expiry=60.0)
+            timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+            self.session = httpx.Client(limits=limits, timeout=timeout, headers=headers, follow_redirects=True)
 
         self.archive = archive.upper()
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")
@@ -169,6 +175,22 @@ class PDSIndex:
         self.cache_path = Path(cache_path)
         self._volumes: Optional[list[VolumeInfo]] = None
 
+        # Check for local Parquet URL index cache
+        self.url_cache_parquet = Path(__file__).resolve().parents[2] / "data" / "pds_cdr_url_cache.parquet"
+        self._url_cache = {}
+        if self.url_cache_parquet.exists():
+            try:
+                import pyarrow.parquet as pq
+                tbl = pq.read_table(self.url_cache_parquet, columns=["product_id", "file_spec"])
+                pids = tbl["product_id"].to_pylist()
+                fsns = tbl["file_spec"].to_pylist()
+                base_prefix = self.base_url.rstrip("/") + "/"
+                for p, f in zip(pids, fsns):
+                    self._url_cache[p] = base_prefix + f
+                log.info(f"Loaded {len(self._url_cache):,} local PDS URL mappings from {self.url_cache_parquet.name}")
+            except Exception as e:
+                log.warning("Failed to load Parquet URL cache: %s", e)
+
     def _list_volumes(self) -> list[str]:
         r = self.session.get(self.base_url + "/", timeout=60)
         r.raise_for_status()
@@ -192,17 +214,21 @@ class PDSIndex:
     def _read_record(self, url: str, row: int, record_bytes: int) -> str:
         start = row * record_bytes
         end = start + record_bytes - 1
-        for attempt in range(5):
-            r = self.session.get(url, headers={"Range": f"bytes={start}-{end}"}, timeout=20)
-            if r.status_code in (200, 206):
-                return r.content.decode("ascii", errors="replace")
-            if r.status_code == 429:
-                sleep_s = 1.0 * (2 ** attempt)
-                log.debug("HTTP 429 on index read %s, retrying in %.1fs...", url, sleep_s)
-                time.sleep(sleep_s)
-                continue
-            raise IndexError(f"HTTP {r.status_code} on range read {url}")
-        raise IndexError(f"HTTP 429 on range read {url} after 5 retries")
+        for attempt in range(10):
+            try:
+                r = self.session.get(url, headers={"Range": f"bytes={start}-{end}"}, timeout=30)
+                if r.status_code in (200, 206):
+                    return r.content.decode("ascii", errors="replace")
+                elif r.status_code == 429:
+                    time.sleep(30.0)
+                    continue
+                else:
+                    raise IndexError(f"HTTP {r.status_code} on range read {url}")
+            except Exception as e:
+                if attempt == 9:
+                    raise e
+                time.sleep(2.0)
+        raise IndexError(f"Failed range read on {url}")
 
     def _characterize_volume(self, volume_id: str) -> VolumeInfo:
         index_url = f"{self.base_url}/{volume_id}/INDEX/INDEX.TAB"
@@ -331,32 +357,25 @@ class PDSIndex:
         raise KeyError(f"Product {product_id!r} not found in any volume")
 
     def url_for(self, product_id: str) -> str:
-        """Resolve a full download URL for an LROC NAC product ID.
-
-        Args:
-            product_id: Product ID string (e.g., ``"M1118880788RC"`` or ``"M1118880788R"``).
-
-        Returns:
-            Direct HTTPS download URL to the product raster file on the PDS server.
-
-        Raises:
-            KeyError: If the product ID is not found in any volume index.
-
-        Example:
-            >>> from luna.io.pds_index import PDSIndex
-            >>> idx = PDSIndex()
-            >>> url = idx.url_for("M1118880788RC")
-            >>> print(url)
-        """
+        """Resolve a full download URL for an LROC NAC product ID."""
+        if not hasattr(self, "_url_cache"):
+            self._url_cache = {}
         pid = _normalize_product_id(product_id, self.suffix)
+        if pid in self._url_cache:
+            return self._url_cache[pid]
+
         if hasattr(self, "_geom_cache") and pid in self._geom_cache and "file_spec_name" in self._geom_cache[pid]:
             fsn = self._geom_cache[pid]["file_spec_name"]
             root_marker = f"/LRO-L-LROC-{'2-EDR' if self.archive == 'EDR' else '3-CDR'}-V1.0"
-            return self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
+            res_url = self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
+            self._url_cache[pid] = res_url
+            return res_url
             
         _, _, fsn, _ = self._lookup(product_id)
         root_marker = f"/LRO-L-LROC-{'2-EDR' if self.archive == 'EDR' else '3-CDR'}-V1.0"
-        return self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
+        res_url = self.base_url.rsplit(root_marker, 1)[0] + "/" + fsn
+        self._url_cache[pid] = res_url
+        return res_url
 
     def geometry_for(self, product_id: str) -> dict:
         """Retrieve the parsed INDEX geometry metadata dictionary for a product ID.
