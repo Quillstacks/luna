@@ -65,6 +65,7 @@ data/_scratch/
 *.png
 *.jpg
 *.jpeg
+*.pdf
 *.svg
 !docs/assets/architecture.svg
 !docs/examples/

@@ -11,6 +11,7 @@ Usage:
 CLI:
     $ luna-verify-physics
     $ luna-render-tufte
+    $ luna-render-sweep
 """
 
 def run_reproduction(*args, **kwargs):
@@ -23,4 +24,9 @@ def plot_reproduction(*args, **kwargs):
     return generate_plot(*args, **kwargs)
 
 
-__all__ = ["run_reproduction", "plot_reproduction"]
+def plot_sweep(*args, **kwargs):
+    from .render_sweep import generate_sweep_plot
+    return generate_sweep_plot(*args, **kwargs)
+
+
+__all__ = ["run_reproduction", "plot_reproduction", "plot_sweep"]

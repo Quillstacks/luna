@@ -108,6 +108,7 @@ docs = [
 [project.scripts]
 luna-verify-physics = "luna.easter_egg.verify_physics:main"
 luna-render-tufte = "luna.easter_egg.render_tufte:main"
+luna-render-sweep = "luna.easter_egg.render_sweep:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
