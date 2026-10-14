@@ -15,6 +15,19 @@ The `luna.io` package handles data fetching, PDS index lookups, NAC decoding, an
         - furnish_kernels
         - furnish_kernels_for_date
         - ensure_kernels_for_label
+        - MissingKernelError
+
+---
+
+## Digital Elevation Model (`luna.io.dem`)
+
+::: luna.io.dem
+    options:
+      members:
+        - LunarDEM
+        - fetch_dem_for_region
+        - get_sldem2015_tile_name
+        - default_dem
 
 ---
 

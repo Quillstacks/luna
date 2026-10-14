@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import logging
 import statistics
-import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from shapely.geometry import Polygon, shape
-from shapely.validation import make_valid
 from shapely.ops import transform
+from shapely.validation import make_valid
 
 from luna.io.nac_reader import get_nacs_from_polygon
 
@@ -153,12 +151,12 @@ def _reject_area_outliers(candidates: list[dict]) -> list[dict]:
         if len(areas) < 3:
             kept.extend(group)
             continue
-            
+
         median_area = statistics.median(areas)
         if median_area <= 0:
             kept.extend(group)
             continue
-            
+
         for c in group:
             if c["intersection"].area <= median_area * AREA_OUTLIER_FACTOR:
                 kept.append(c)

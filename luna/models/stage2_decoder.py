@@ -10,7 +10,6 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Optional
 
 import numpy as np
 import torch
@@ -25,9 +24,11 @@ def compute_lunar_distance(lat1: float, lon1: float, lat2: float, lon2: float) -
     """Computes surface distance between two points using localized flat approximation."""
     dlat = math.radians(lat1 - lat2)
     delta_lon = (lon1 % 360) - (lon2 % 360)
-    if delta_lon > 180: delta_lon -= 360
-    elif delta_lon < -180: delta_lon += 360
-        
+    if delta_lon > 180:
+        delta_lon -= 360
+    elif delta_lon < -180:
+        delta_lon += 360
+
     dlon = math.radians(delta_lon)
     mean_lat = math.radians((lat1 + lat2) / 2.0)
     dy = LUNAR_METERS_PER_DEGREE * 57.2957795 * dlat # Convert degrees back for distance
@@ -82,7 +83,7 @@ class SpatialTokenExtractor:
         self.hidden_dim = hidden_dim
         self.patch_size = patch_size
         self.hidden_dim = hidden_dim
-    
+
     def extract_spatial_tokens(self, features: dict) -> torch.Tensor:
         if 'x_norm_patchtokens' in features:
             spatial_tokens = features['x_norm_patchtokens']
@@ -93,31 +94,31 @@ class SpatialTokenExtractor:
         else:
             raise KeyError(f"Spatial tokens not found. Available keys: {list(features.keys())}")
         return spatial_tokens
-    
-    def get_spatial_grid_size(self, image_size: int) -> Tuple[int, int]:
+
+    def get_spatial_grid_size(self, image_size: int) -> tuple[int, int]:
         h = w = image_size // self.patch_size
         return h, w
 
 
 class GeometricReconstructor(nn.Module):
     """Reshapes flat token sequences back to 2D spatial feature maps."""
-    def __init__(self, input_dim: int = 1024, output_dim: int = 256, grid_size: Tuple[int, int] = (16, 16)):
+    def __init__(self, input_dim: int = 1024, output_dim: int = 256, grid_size: tuple[int, int] = (16, 16)):
         super().__init__()
         self.grid_size = grid_size
         self.projection = nn.Linear(input_dim, output_dim)
         nn.init.kaiming_normal_(self.projection.weight, mode='fan_in', nonlinearity='relu')
         nn.init.zeros_(self.projection.bias)
-    
+
     def forward(self, spatial_tokens: torch.Tensor) -> torch.Tensor:
         batch_size, num_patches, input_dim = spatial_tokens.shape
-        
+
         if input_dim != self.projection.in_features:
             new_proj = nn.Linear(input_dim, self.projection.out_features).to(spatial_tokens.device)
             nn.init.kaiming_normal_(new_proj.weight, mode='fan_in', nonlinearity='relu')
             nn.init.zeros_(new_proj.bias)
             self.projection = new_proj
             self.projection = self.projection.to(dtype=next(self.parameters()).dtype)
-        
+
         projected = self.projection(spatial_tokens)
         grid_h, grid_w = self.grid_size
         return projected.permute(0, 2, 1).reshape(batch_size, -1, grid_h, grid_w)
@@ -125,18 +126,18 @@ class GeometricReconstructor(nn.Module):
 
 class FPNBlock(nn.Module):
     """Upsampling block with optional cross-layer fusion."""
-    def __init__(self, in_channels: int, out_channels: int, upscale_factor: int = 2, use_skip: bool = False, skip_channels: Optional[int] = None):
+    def __init__(self, in_channels: int, out_channels: int, upscale_factor: int = 2, use_skip: bool = False, skip_channels: int | None = None):
         super().__init__()
         self.upscale_factor = upscale_factor
         self.use_skip = use_skip and skip_channels is not None
-        
+
         self.upsample = nn.Sequential(
             nn.Upsample(scale_factor=upscale_factor, mode='bilinear', align_corners=False),
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
         )
-        
+
         if self.use_skip:
             self.skip_conv = nn.Sequential(
                 nn.Conv2d(skip_channels, out_channels, kernel_size=1),
@@ -147,8 +148,8 @@ class FPNBlock(nn.Module):
                 nn.BatchNorm2d(out_channels),
                 nn.ReLU(inplace=True),
             )
-    
-    def forward(self, x: torch.Tensor, skip: Optional[torch.Tensor] = None) -> torch.Tensor:
+
+    def forward(self, x: torch.Tensor, skip: torch.Tensor | None = None) -> torch.Tensor:
         x = self.upsample(x)
         if self.use_skip and skip is not None:
             if skip.shape[-2:] != x.shape[-2:]:
@@ -161,29 +162,29 @@ class FPNBlock(nn.Module):
 
 class FeaturePyramidNetwork(nn.Module):
     """Resolution restoration cascade for dense feature generation."""
-    def __init__(self, start_size: Tuple[int, int] = (16, 16), target_size: Tuple[int, int] = (256, 256), start_channels: int = 256, fpn_dims: list = None):
+    def __init__(self, start_size: tuple[int, int] = (16, 16), target_size: tuple[int, int] = (256, 256), start_channels: int = 256, fpn_dims: list = None):
         super().__init__()
         if fpn_dims is None:
             fpn_dims = [256, 128, 64]
-        
+
         self.start_size = start_size
         self.target_size = target_size
         self.blocks = nn.ModuleList()
-        
+
         while len(fpn_dims) < 4:
             fpn_dims.append(fpn_dims[-1] // 2 if fpn_dims else start_channels // 4)
-        
+
         self.blocks.append(FPNBlock(start_channels, fpn_dims[0], upscale_factor=2))
         self.blocks.append(FPNBlock(fpn_dims[0], fpn_dims[1], upscale_factor=2))
         self.blocks.append(FPNBlock(fpn_dims[1], fpn_dims[2], upscale_factor=2))
         self.blocks.append(FPNBlock(fpn_dims[2], fpn_dims[3], upscale_factor=2))
-        
+
         self.final_conv = nn.Sequential(
             nn.Conv2d(fpn_dims[-1], fpn_dims[-1], kernel_size=3, padding=1),
             nn.BatchNorm2d(fpn_dims[-1]),
             nn.ReLU(inplace=True),
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for block in self.blocks:
             x = block(x)
@@ -201,7 +202,7 @@ class ThreeClassSegmentationHead(nn.Module):
             nn.Dropout2d(0.1),
             nn.Conv2d(in_channels // 2, num_classes, kernel_size=1),
         )
-    
+
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.classifier(features)
 
@@ -220,9 +221,9 @@ class PhysicsValidationResult:
     class_confidence: float
     tile_centroid_x: float = 128.0
     tile_centroid_y: float = 128.0
-    lon: Optional[float] = None
-    lat: Optional[float] = None
-    artifact_match: Optional[str] = None
+    lon: float | None = None
+    lat: float | None = None
+    artifact_match: str | None = None
 
 
 class PhysicsValidator:
@@ -231,10 +232,10 @@ class PhysicsValidator:
         self.pixel_scale = pixel_scale_meters
         self.min_depth_ratio = min_depth_to_width_ratio
         self.border_margin = border_margin
-    
-    def validate_detection(self, shadow_mask: np.ndarray, edge_mask: np.ndarray, sub_solar_azimuth: float, incidence_angle_deg: float, pixel_scale: float = 0.5, lon: Optional[float] = None, lat: Optional[float] = None) -> PhysicsValidationResult:
+
+    def validate_detection(self, shadow_mask: np.ndarray, edge_mask: np.ndarray, sub_solar_azimuth: float, incidence_angle_deg: float, pixel_scale: float = 0.5, lon: float | None = None, lat: float | None = None) -> PhysicsValidationResult:
         incidence_rad = np.radians(incidence_angle_deg)
-        
+
         if self.border_margin > 0:
             shadow_mask = shadow_mask.copy()
             edge_mask = edge_mask.copy()
@@ -249,7 +250,7 @@ class PhysicsValidator:
 
         shadow_y, shadow_x = np.where(shadow_mask > 0)
         edge_y, edge_x = np.where(edge_mask > 0)
-        
+
         if len(shadow_y) < 10 or len(edge_y) < 10:
             return PhysicsValidationResult(
                 is_valid_pit=False, is_boulder=False, depth_estimate_meters=0.0,
@@ -257,36 +258,36 @@ class PhysicsValidator:
                 alignment_error_degrees=180.0, width_pixels=0, height_pixels=0, class_confidence=0.0,
                 lon=lon, lat=lat
             )
-            
+
         shadow_cx, shadow_cy = np.mean(shadow_x), np.mean(shadow_y)
         edge_cx, edge_cy = np.mean(edge_x), np.mean(edge_y)
-        
+
         dx = shadow_cx - edge_cx
         dy = shadow_cy - edge_cy
-        
+
         shadow_vector_deg = (np.degrees(np.arctan2(dx, -dy)) + 360) % 360
         solar_vector_deg = (sub_solar_azimuth + 180) % 360
-        
+
         alignment_error = abs(shadow_vector_deg - solar_vector_deg)
         if alignment_error > 180:
             alignment_error = 360 - alignment_error
-            
+
         width_px = int(np.max(edge_x) - np.min(edge_x)) if len(edge_x) > 0 else 0
         height_px = int(np.max(edge_y) - np.min(edge_y)) if len(edge_y) > 0 else 0
-        
+
         shadow_length_px = np.sqrt(dx**2 + dy**2)
         shadow_length_m = shadow_length_px * pixel_scale
-        
+
         depth_m = shadow_length_m / np.tan(incidence_rad) if np.tan(incidence_rad) > 0.01 else 0.0
         width_m = max(width_px, height_px) * pixel_scale
         depth_width_ratio = depth_m / width_m if width_m > 0 else 0
-        
+
         is_aligned = alignment_error < 45
         is_deep_enough = depth_width_ratio >= self.min_depth_ratio
         is_valid_pit = is_aligned and is_deep_enough
 
         # Historical artifact & known anomaly verification
-        artifact_match: Optional[str] = None
+        artifact_match: str | None = None
         if lon is not None and lat is not None:
             norm_lon = (lon + 360.0) % 360.0
             if abs(lat - 0.67408) < 0.005 and abs(norm_lon - 23.47297) < 0.005:
@@ -301,12 +302,12 @@ class PhysicsValidator:
 
         if artifact_match:
             log.info("Surface anomaly at (%.4f°, %.4f°) classified: %s", lon, lat, artifact_match)
-        
+
         confidence = 0.0
         if is_valid_pit:
             confidence = (1.0 - alignment_error / 45.0) * 0.7 + (depth_width_ratio / 1.0) * 0.3
             confidence = min(confidence, 1.0)
-            
+
         return PhysicsValidationResult(
             is_valid_pit=is_valid_pit, is_boulder=not is_valid_pit,
             depth_estimate_meters=float(depth_m), shadow_vector_degrees=float(shadow_vector_deg),
@@ -333,25 +334,25 @@ class Stage2DenseDecoder(nn.Module):
         classification_head: :class:`ThreeClassSegmentationHead` producing class logits.
         physics_validator: :class:`PhysicsValidator` checking shadow-to-illumination alignment.
     """
-    def __init__(self, config: Stage2Config = DEFAULT_CONFIG, device: Optional[str] = None):
+    def __init__(self, config: Stage2Config = DEFAULT_CONFIG, device: str | None = None):
         super().__init__()
         self.config = config
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        
+
         self.token_extractor = SpatialTokenExtractor(patch_size=config.patch_size, hidden_dim=config.dino_hidden_dim)
         grid_size = self.token_extractor.get_spatial_grid_size(config.input_image_size)
-        
+
         self.reconstructor = GeometricReconstructor(input_dim=config.dino_hidden_dim, output_dim=config.projection_dim, grid_size=grid_size)
         self.fpn = FeaturePyramidNetwork(start_size=grid_size, target_size=(config.input_image_size, config.input_image_size), start_channels=config.projection_dim, fpn_dims=config.fpn_dims)
-        
+
         final_channels = config.fpn_dims[-1] if config.fpn_dims else config.projection_dim // 4
         self.classification_head = ThreeClassSegmentationHead(in_channels=final_channels, num_classes=config.num_classes)
-        
+
         self._initialize_weights()
         self.to(self.device)
         if self.device == "cuda":
             self.half()
-            
+
         self.physics_validator = PhysicsValidator(pixel_scale_meters=0.5, min_depth_to_width_ratio=config.min_depth_to_width_ratio, border_margin=config.border_margin)
         log.info(f"Stage2DenseDecoder stacked successfully on {self.device}")
 
@@ -359,13 +360,15 @@ class Stage2DenseDecoder(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None: nn.init.constant_(m.bias, 0)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.Linear):
                 nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-                if m.bias is not None: nn.init.zeros_(m.bias)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, spatial_tokens: torch.Tensor) -> torch.Tensor:
         features_2d = self.reconstructor(spatial_tokens)
@@ -378,21 +381,21 @@ class Stage2DenseDecoder(nn.Module):
         scaled_logits = logits / temperature
         return torch.softmax(scaled_logits, dim=1)
 
-    def validate_with_physics(self, spatial_tokens: torch.Tensor, sub_solar_azimuth: float, incidence_angle_deg: float, pixel_scale: float = 0.5, batch_coords: Optional[list[dict]] = None) -> list:
+    def validate_with_physics(self, spatial_tokens: torch.Tensor, sub_solar_azimuth: float, incidence_angle_deg: float, pixel_scale: float = 0.5, batch_coords: list[dict] | None = None) -> list:
         with torch.no_grad():
             prob_masks = self.get_probability_masks(spatial_tokens)
-        
+
         results = []
         for i in range(prob_masks.shape[0]):
             shadow_mask = prob_masks[i, 1, :, :].cpu().numpy() > 0.5
             edge_mask = prob_masks[i, 2, :, :].cpu().numpy() > 0.5
-            
+
             coords = batch_coords[i] if batch_coords else {}
             result = self.physics_validator.validate_detection(
                 shadow_mask, edge_mask, sub_solar_azimuth, incidence_angle_deg,
                 pixel_scale, lon=coords.get("lon"), lat=coords.get("lat")
             )
-            
+
             if shadow_mask.sum() == 0 or edge_mask.sum() == 0:
                 result.class_confidence = 0.0
             else:
@@ -406,7 +409,7 @@ class Stage2DenseDecoder(nn.Module):
         torch.save({'config': self.config, 'state_dict': self.state_dict(), 'device': self.device}, path)
 
     @classmethod
-    def from_checkpoint(cls, path: str | Path, device: Optional[str] = None) -> 'Stage2DenseDecoder':
+    def from_checkpoint(cls, path: str | Path, device: str | None = None) -> Stage2DenseDecoder:
         path = Path(path)
         checkpoint = torch.load(path, map_location='cpu', weights_only=False)
         config = checkpoint.get('config', DEFAULT_CONFIG)
@@ -424,22 +427,40 @@ class Stage2Refiner:
     """Refiner linking Stage-1 candidates to full Stage-2 dense verification."""
     CLASSES = {0: "regolith", 1: "pit", 2: "boulder"}
 
-    def __init__(self, decoder: Stage2DenseDecoder, dino_encoder: Optional[any] = None):
+    def __init__(
+        self,
+        decoder: Stage2DenseDecoder,
+        dino_encoder: any | None = None,
+        *,
+        dem: any | None = None,
+        alt_m: float | None = None,
+    ):
         self.decoder = decoder
         self.dino_encoder = dino_encoder
+        self.dem = dem
+        self.alt_m = alt_m
 
     @classmethod
-    def from_checkpoint(cls, checkpoint_path: str | Path, dino_encoder: any = None, device: Optional[str] = None) -> 'Stage2Refiner':
+    def from_checkpoint(
+        cls,
+        checkpoint_path: str | Path,
+        dino_encoder: any = None,
+        device: str | None = None,
+        *,
+        dem: any | None = None,
+        alt_m: float | None = None,
+    ) -> Stage2Refiner:
         decoder = Stage2DenseDecoder.from_checkpoint(checkpoint_path, device=device)
-        return cls(decoder=decoder, dino_encoder=dino_encoder)
+        return cls(decoder=decoder, dino_encoder=dino_encoder, dem=dem, alt_m=alt_m)
 
-    def refine(self, hits: list, out_dir: Optional[str | Path] = None, score_thr: float = 0.5, save_debug_plots: bool = False, skip_preprocess: bool = False, trace: Optional[dict] = None, **kwargs) -> list:
-        from luna.models.essa import RefinedHit
+    def refine(self, hits: list, out_dir: str | Path | None = None, score_thr: float = 0.5, save_debug_plots: bool = False, skip_preprocess: bool = False, trace: dict | None = None, **kwargs) -> list:
+        import pickle
+
+        from luna.config import SCRATCH_DIR
         from luna.io.nac_reader import read_nac
         from luna.io.projection import pixel_to_lonlat
-        import pickle
-        from luna.config import SCRATCH_DIR
-        
+        from luna.models.essa import RefinedHit
+
         # Load consolidated SVM gatekeeper if trained
         svm_model = None
         svm_scaler = None
@@ -453,7 +474,7 @@ class Stage2Refiner:
                 log.info("Loaded consolidated SVM gatekeeper from stage2_svm.pkl")
         except Exception as e:
             log.warning(f"Could not load Stage-2 SVM classifier: {e}")
-        
+
         refined_hits = []
         device = self.decoder.device
         nac_cache = {}
@@ -466,9 +487,10 @@ class Stage2Refiner:
                     if nac_path is None or not nac_path.exists() or nac_path.is_dir():
                         from luna.config import SCRATCH_DIR
                         nac_path = SCRATCH_DIR / f"{hit.product_id}.IMG"
-                    
-                    if not nac_path.exists(): continue
-                    
+
+                    if not nac_path.exists():
+                        continue
+
                     from luna.io.projection import LinearProjection
                     nac_img = read_nac(nac_path, geometry=True)
                     try:
@@ -484,21 +506,23 @@ class Stage2Refiner:
                         getattr(nac_img, 'pixel_scale', 0.5),
                         proj
                     )
-                
+
                 nac_img, h, w, sub_solar_azimuth, incidence_angle, pixel_scale, proj = nac_cache[hit.product_id]
-                
+
                 x0, y0 = int(hit.x_offset), int(hit.y_offset)
                 x0, y0 = max(0, min(w - 1, x0)), max(0, min(h - 1, y0))
                 tile = nac_img.pixels[y0:min(h, y0+256), x0:min(w, x0+256)].copy().astype(np.float32)
-                
+
                 if tile.shape[0] < 256 or tile.shape[1] < 256:
                     tile = np.pad(tile, ((0, max(0, 256 - tile.shape[0])), (0, max(0, 256 - tile.shape[1]))), mode='reflect')
-                
+
                 tile_norm = (tile - tile.min()) / (tile.max() - tile.min() + 1e-6)
                 image_tensor = torch.from_numpy(tile_norm).unsqueeze(0).unsqueeze(0).to(device)
-                if device == "cuda": image_tensor = image_tensor.half()
-                if image_tensor.shape[1] == 1: image_tensor = image_tensor.repeat(1, 3, 1, 1)
-                
+                if device == "cuda":
+                    image_tensor = image_tensor.half()
+                if image_tensor.shape[1] == 1:
+                    image_tensor = image_tensor.repeat(1, 3, 1, 1)
+
                 if self.dino_encoder is not None:
                     with torch.no_grad():
                         from torchvision import transforms
@@ -507,23 +531,23 @@ class Stage2Refiner:
                         spatial_tokens = self.decoder.token_extractor.extract_spatial_tokens(features).to(dtype=next(self.decoder.parameters()).dtype)
                 else:
                     spatial_tokens = torch.randn(1, 256, 1024).to(device)
-                
+
                 with torch.no_grad():
                     prob_masks = self.decoder.get_probability_masks(spatial_tokens, temperature=0.7)
-                
+
                 prob_masks_np = prob_masks.cpu().numpy()[0]
                 class_preds = np.argmax(prob_masks_np, axis=0)
                 shadow_mask, edge_mask = prob_masks_np[1, :, :], prob_masks_np[2, :, :]
-                
+
                 if shadow_mask.sum() == 0 or edge_mask.sum() == 0:
                     combined_score = 0.0
                 else:
                     combined_score = float((shadow_mask.max() + edge_mask.max()) / 2.0)
-                
+
                 physics_result = self.decoder.physics_validator.validate_detection(
                     shadow_mask > score_thr, edge_mask > 0.5, sub_solar_azimuth, incidence_angle, pixel_scale, hit.lon, hit.lat
                 )
-                
+
                 svm_passed = True
                 if svm_model is not None and svm_scaler is not None:
                     try:
@@ -533,42 +557,55 @@ class Stage2Refiner:
 
                         log.info(f"  SVM Gatekeeper decision for {hit.product_id}: decision_score={decision_score:.4f}")
 
-                        if decision_score < -0.5: 
+                        if decision_score < -0.5:
                             svm_passed = False
                     except Exception as svm_err:
                         log.warning(f"  SVM prediction failed: {svm_err}")
-                
+
                 if combined_score >= score_thr and physics_result.is_valid_pit and svm_passed:
                     pixel_dx = physics_result.tile_centroid_x - 128.0
                     pixel_dy = physics_result.tile_centroid_y - 128.0
-                    
+
                     meter_dx = pixel_dx * pixel_scale
                     meter_dy = -pixel_dy * pixel_scale
-                    
+
                     precise_x = x0 + physics_result.tile_centroid_x
                     precise_y = y0 + physics_result.tile_centroid_y
-                    
+
                     try:
-                        # Primary: Use precise bilinear projection (LOLA DEM-registered reference frame)
-                        refined_lon, refined_lat = pixel_to_lonlat(proj, precise_x, precise_y)
-                        if math.isnan(refined_lon) or math.isnan(refined_lat):
-                            raise ValueError("Bilinear projection returned NaN")
-                    except Exception as proj_error:
-                        log.warning(f"Bilinear projection failed, falling back to SPICE: {proj_error}")
+                        # Primary: Exact SPICE pushbroom ray-sphere projection (MOON_ME frame)
+                        from luna.config import SCRATCH_DIR
+                        from luna.io.spice_project import image_to_ground
+
+                        target_img = getattr(nac_img, "path", None) or (SCRATCH_DIR / f"{hit.product_id}.IMG")
+                        refined_lon, refined_lat = image_to_ground(
+                            str(target_img),
+                            precise_x,
+                            precise_y,
+                            alt_m=getattr(self, "alt_m", None),
+                            dem=getattr(self, "dem", None),
+                        )
+                        if math.isnan(refined_lon) or math.isnan(refined_lat) or (
+                            refined_lon == 0.0 and refined_lat == 0.0
+                        ):
+                            raise ValueError("SPICE returned invalid coordinates")
+                    except Exception as spice_error:
+                        log.warning(f"SPICE projection unavailable, falling back to bilinear: {spice_error}")
                         try:
-                            from luna.io.spice_project import image_to_ground
-                            from luna.config import SCRATCH_DIR
-                            target_img = SCRATCH_DIR / f"{hit.product_id}.IMG"
-                            refined_lon, refined_lat = image_to_ground(str(target_img), precise_x, precise_y)
-                            if refined_lon == 0.0 and refined_lat == 0.0:
-                                raise ValueError("SPICE returned 0.0, 0.0")
-                        except Exception as spice_error:
-                            log.error(f"All coordinate projection methods failed: {spice_error}")
+                            if proj is None:
+                                raise ValueError("No bilinear projection available")
+                            refined_lon, refined_lat = pixel_to_lonlat(
+                                proj, int(round(precise_x)), int(round(precise_y))
+                            )
+                            if math.isnan(refined_lon) or math.isnan(refined_lat):
+                                raise ValueError("Bilinear projection returned NaN")
+                        except Exception as proj_error:
+                            log.error(f"All coordinate projection methods failed: {proj_error}")
                             delta_lat = meter_dy / LUNAR_METERS_PER_DEGREE
                             delta_lon = meter_dx / (LUNAR_METERS_PER_DEGREE * math.cos(math.radians(hit.lat)))
                             refined_lat = hit.lat + delta_lat
                             refined_lon = hit.lon + delta_lon
-                    
+
                     refined_hit = RefinedHit(
                         rank=hit.rank, product_id=hit.product_id, votes=hit.votes, dino_score=hit.score,
                         lon=refined_lon, lat=refined_lat, x_offset=hit.x_offset, y_offset=hit.y_offset,
@@ -576,46 +613,46 @@ class Stage2Refiner:
                         dino_similarity=combined_score
                     )
                     refined_hits.append(refined_hit)
-                    
+
                     log.info(f"  Stage-2 CONFIRMED pit in {hit.product_id}: score={combined_score:.3f}, precise_lat={refined_lat:.6f}°")
                 else:
                     log.info(f"  Stage-2 REJECTED {hit.product_id}: score={combined_score:.3f}, boulder={physics_result.is_boulder}")
-                
+
                 if save_debug_plots and out_dir and physics_result.is_valid_pit:
                     self._save_debug_plots(Path(out_dir), hit.product_id, tile, class_preds, prob_masks_np, physics_result, hit.rank)
-                    
+
             except Exception as e:
                 log.error(f"Stage-2 refinement failed for {hit.product_id}: {e}")
                 continue
-                
+
         return refined_hits
 
     def _save_debug_plots(self, out_dir: Path, product_id: str, image_data: np.ndarray, class_preds: np.ndarray, prob_masks: np.ndarray, physics_result: PhysicsValidationResult, rank: int) -> None:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
-        
+
         out_dir.mkdir(parents=True, exist_ok=True)
         img_display = ((image_data - image_data.min()) / (image_data.max() - image_data.min() + 1e-6) * 255).astype(np.uint8)
-        
+
         fig, axes = plt.subplots(2, 3, figsize=(15, 10))
         axes[0, 0].imshow(img_display, cmap='gray')
         axes[0, 0].set_title('Original Image')
         axes[0, 0].axis('off')
-        
+
         cmap = plt.get_cmap('viridis', 3)
         axes[0, 1].imshow(class_preds, cmap=cmap, vmin=0, vmax=2)
         axes[0, 1].set_title('Class Predictions\n(0=Regolith, 1=Pit, 2=Boulder)')
         axes[0, 1].axis('off')
-        
+
         axes[0, 2].imshow(prob_masks[1, :, :], cmap='Blues', vmin=0, vmax=1)
         axes[0, 2].set_title(f'True Void (Pit) Probability\nMax: {prob_masks[1].max():.3f}')
         axes[0, 2].axis('off')
-        
+
         axes[1, 0].imshow(prob_masks[2, :, :], cmap='Reds', vmin=0, vmax=1)
         axes[1, 0].set_title(f'Obstacle Probability\nMax: {prob_masks[2].max():.3f}')
         axes[1, 0].axis('off')
-        
+
         info_text = (
             f"Physics Validation:\n  Valid Pit: {physics_result.is_valid_pit}\n  Boulder: {physics_result.is_boulder}\n"
             f"  Depth: {physics_result.depth_estimate_meters:.2f} m\n  Alignment Error: {physics_result.alignment_error_degrees:.1f}°\n"
@@ -624,7 +661,7 @@ class Stage2Refiner:
         axes[1, 1].text(0.1, 0.5, info_text, transform=axes[1, 1].transAxes, va='center', ha='left', fontsize=10)
         axes[1, 1].set_title('Physics Validation')
         axes[1, 1].axis('off')
-        
+
         fig.delaxes(axes[1, 2])
         plt.tight_layout()
         plt.savefig(out_dir / f"stage2_{product_id}_rank_{rank}.png", dpi=150)
@@ -636,36 +673,38 @@ class Stage2Refiner:
         votes = float(hit.votes)
         shadow_ratio = float(shadow_mask.sum()) / (256.0 * 256.0)
         edge_ratio = float(edge_mask.sum()) / (256.0 * 256.0)
-        
+
         shadow_y, shadow_x = np.where(shadow_mask > 0)
         edge_y, edge_x = np.where(edge_mask > 0)
-        
+
         shadow_cx = float(np.mean(shadow_x)) if len(shadow_x) > 0 else 128.0
         shadow_cy = float(np.mean(shadow_y)) if len(shadow_y) > 0 else 128.0
         edge_cx = float(np.mean(edge_x)) if len(edge_x) > 0 else 128.0
         edge_cy = float(np.mean(edge_y)) if len(edge_y) > 0 else 128.0
-        
+
         centroid_dist = float(np.sqrt((shadow_cx - edge_cx) ** 2 + (shadow_cy - edge_cy) ** 2))
         aspect_ratio = float(physics_result.width_pixels) / float(physics_result.height_pixels + 1e-6)
         alignment_error = float(physics_result.alignment_error_degrees)
-        
+
         feats = np.array([dino_score, votes, shadow_ratio, edge_ratio, centroid_dist, aspect_ratio, alignment_error], dtype=np.float32)
         return np.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
 
     def train_svm(self, hits: list, catalog_path: str = "catalogs/lpa.csv") -> dict:
         """Trains the linear SVM classifier on features labeled against the LPA catalog."""
         import csv
-        import pickle
         import math
-        from sklearn.svm import SVC
+        import pickle
+
         from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import SVC
+
         from luna.io.nac_reader import read_nac
         from luna.io.projection import LinearProjection, pixel_to_lonlat
-        
+
         # 1. Load catalog pits for Aristarchus
         catalog_pits = []
         try:
-            with open(catalog_path, mode="r", encoding="utf-8") as f:
+            with open(catalog_path, encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     if row["host"].strip() == "Aristarchus":
@@ -681,14 +720,14 @@ class Stage2Refiner:
         except Exception as e:
             log.error(f"Failed to read catalog file {catalog_path}: {e}")
             return {}
-        
+
         X = []
         y = []
         nac_cache = {}
         device = self.decoder.device
-        
+
         log.info(f"Extracting features for {len(hits)} candidates to train SVM...")
-        
+
         for idx, hit in enumerate(hits):
             try:
                 # Load frame and cache metadata
@@ -711,20 +750,22 @@ class Stage2Refiner:
                         getattr(nac_img, 'pixel_scale', 0.5),
                         proj
                     )
-                
+
                 nac_img, h, w, sub_solar_azimuth, incidence_angle, pixel_scale, proj = nac_cache[hit.product_id]
-                
+
                 x0, y0 = int(hit.x_offset), int(hit.y_offset)
                 x0, y0 = max(0, min(w - 1, x0)), max(0, min(h - 1, y0))
                 tile = nac_img.pixels[y0:min(h, y0+256), x0:min(w, x0+256)].copy().astype(np.float32)
                 if tile.shape[0] < 256 or tile.shape[1] < 256:
                     tile = np.pad(tile, ((0, max(0, 256 - tile.shape[0])), (0, max(0, 256 - tile.shape[1]))), mode='reflect')
-                
+
                 tile_norm = (tile - tile.min()) / (tile.max() - tile.min() + 1e-6)
                 image_tensor = torch.from_numpy(tile_norm).unsqueeze(0).unsqueeze(0).to(device)
-                if device == "cuda": image_tensor = image_tensor.half()
-                if image_tensor.shape[1] == 1: image_tensor = image_tensor.repeat(1, 3, 1, 1)
-                
+                if device == "cuda":
+                    image_tensor = image_tensor.half()
+                if image_tensor.shape[1] == 1:
+                    image_tensor = image_tensor.repeat(1, 3, 1, 1)
+
                 # Get embeddings
                 if self.dino_encoder is not None:
                     with torch.no_grad():
@@ -734,39 +775,50 @@ class Stage2Refiner:
                         spatial_tokens = self.decoder.token_extractor.extract_spatial_tokens(features).to(dtype=next(self.decoder.parameters()).dtype)
                 else:
                     spatial_tokens = torch.randn(1, 256, 1024).to(device)
-                
+
                 with torch.no_grad():
                     prob_masks = self.decoder.get_probability_masks(spatial_tokens, temperature=0.7)
-                
+
                 prob_masks_np = prob_masks.cpu().numpy()[0]
                 shadow_mask = prob_masks_np[1, :, :]
                 edge_mask = prob_masks_np[2, :, :]
-                
+
                 # FIXED: Threshold must match the target inference score (0.7) so centroid calculations match!
                 physics_result = self.decoder.physics_validator.validate_detection(
                     shadow_mask > 0.70, edge_mask > 0.5, sub_solar_azimuth, incidence_angle, pixel_scale, hit.lon, hit.lat
                 )
-                
+
                 # Calculate precise coordinates (bilinear or SPICE)
                 precise_x = x0 + physics_result.tile_centroid_x
                 precise_y = y0 + physics_result.tile_centroid_y
-                
-                # >>> FIX IS HERE: Identical coordinate projection block as in refine() <<<
+
                 try:
-                    if proj is None:
-                        raise ValueError("No bilinear projection available")
-                    refined_lon, refined_lat = pixel_to_lonlat(proj, precise_x, precise_y)
-                    if math.isnan(refined_lon) or math.isnan(refined_lat):
-                        raise ValueError("Bilinear projection returned NaN")
-                except Exception as proj_error:
+                    # Primary: Exact SPICE pushbroom ray-sphere projection (MOON_ME frame)
+                    from luna.config import SCRATCH_DIR
+                    from luna.io.spice_project import image_to_ground
+
+                    target_img = getattr(nac_img, "path", None) or (SCRATCH_DIR / f"{hit.product_id}.IMG")
+                    refined_lon, refined_lat = image_to_ground(
+                        str(target_img),
+                        precise_x,
+                        precise_y,
+                        alt_m=getattr(self, "alt_m", None),
+                        dem=getattr(self, "dem", None),
+                    )
+                    if math.isnan(refined_lon) or math.isnan(refined_lat) or (
+                        refined_lon == 0.0 and refined_lat == 0.0
+                    ):
+                        raise ValueError("SPICE failure")
+                except Exception:
                     try:
-                        from luna.io.spice_project import image_to_ground
-                        from luna.config import SCRATCH_DIR
-                        target_img = SCRATCH_DIR / f"{hit.product_id}.IMG"
-                        refined_lon, refined_lat = image_to_ground(str(target_img), precise_x, precise_y)
-                        if refined_lon == 0.0 and refined_lat == 0.0:
-                            raise ValueError("SPICE failure")
-                    except Exception as spice_error:
+                        if proj is None:
+                            raise ValueError("No bilinear projection available")
+                        refined_lon, refined_lat = pixel_to_lonlat(
+                            proj, int(round(precise_x)), int(round(precise_y))
+                        )
+                        if math.isnan(refined_lon) or math.isnan(refined_lat):
+                            raise ValueError("Bilinear projection returned NaN")
+                    except Exception:
                         # Full mathematical fallback if everything else fails
                         pixel_dx = physics_result.tile_centroid_x - 128.0
                         pixel_dy = physics_result.tile_centroid_y - 128.0
@@ -776,67 +828,76 @@ class Stage2Refiner:
                         delta_lon = meter_dx / (LUNAR_METERS_PER_DEGREE * math.cos(math.radians(hit.lat)))
                         refined_lat = hit.lat + delta_lat
                         refined_lon = hit.lon + delta_lon
-                
+
                 if refined_lon > 180.0:
                     refined_lon -= 360.0
-                
+
                 # Compute distance to catalog pits
                 best_dist = float('inf')
                 for pit in catalog_pits:
                     dist = compute_lunar_distance(refined_lat, refined_lon, pit["lat"], pit["lon"])
                     if dist < best_dist:
                         best_dist = dist
-                
+
                 label = 1 if best_dist < 300.0 else 0
                 feats = self._extract_svm_features(hit, shadow_mask, edge_mask, physics_result)
-                
+
                 X.append(feats)
                 y.append(label)
             except Exception as e:
                 log.error(f"Failed to process candidate {idx} for SVM training: {e}")
-                
+
         X = np.array(X)
         y = np.array(y)
-        
+
         if len(X) == 0:
             log.error("No valid features extracted. SVM training aborted.")
             return {}
-            
+
         positives = int(y.sum())
         negatives = len(y) - positives
         log.info(f"SVM Dataset: {positives} Positives, {negatives} Negatives")
-        
+
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
-        
+
         svm = SVC(kernel='linear', probability=True, C=1.0, class_weight='balanced')
         svm.fit(X_scaled, y)
-        
+
         # Log feature coefficients for interpretability
         coefs = svm.coef_[0]
         feature_names = ["dino_similarity", "votes", "shadow_area_ratio", "rim_area_ratio", "centroid_dist", "aspect_ratio", "alignment_error"]
         log.info("SVM Feature Coefficients (Interpretability Report):")
         for name, coef in zip(feature_names, coefs):
             log.info(f"  {name:20s}: {coef:.4f}")
-            
+
         from luna.config import SCRATCH_DIR
         save_path = SCRATCH_DIR / "stage2_svm.pkl"
         with open(save_path, "wb") as f:
             pickle.dump({"scaler": scaler, "model": svm}, f)
-            
+
         log.info(f"SVM classifier saved successfully to {save_path}")
         return {"positives": positives, "negatives": negatives}
 
 
-def build_stage2_decoder(config: Optional[Stage2Config] = None, checkpoint_path: Optional[str | Path] = None, device: Optional[str] = None) -> Stage2DenseDecoder:
+def build_stage2_decoder(config: Stage2Config | None = None, checkpoint_path: str | Path | None = None, device: str | None = None) -> Stage2DenseDecoder:
     if checkpoint_path is not None and Path(checkpoint_path).exists():
         return Stage2DenseDecoder.from_checkpoint(checkpoint_path, device=device)
     cfg = config or DEFAULT_CONFIG
     return Stage2DenseDecoder(config=cfg, device=device)
 
 
-def build_stage2_refiner(checkpoint_path: Optional[str | Path] = None, dino_encoder: Optional[any] = None, device: Optional[str] = None) -> Stage2Refiner:
+def build_stage2_refiner(
+    checkpoint_path: str | Path | None = None,
+    dino_encoder: any | None = None,
+    device: str | None = None,
+    *,
+    dem: any | None = None,
+    alt_m: float | None = None,
+) -> Stage2Refiner:
     if checkpoint_path is not None and Path(checkpoint_path).exists():
-        return Stage2Refiner.from_checkpoint(checkpoint_path, dino_encoder, device=device)
+        return Stage2Refiner.from_checkpoint(
+            checkpoint_path, dino_encoder, device=device, dem=dem, alt_m=alt_m
+        )
     decoder = build_stage2_decoder(device=device)
-    return Stage2Refiner(decoder=decoder, dino_encoder=dino_encoder)
+    return Stage2Refiner(decoder=decoder, dino_encoder=dino_encoder, dem=dem, alt_m=alt_m)

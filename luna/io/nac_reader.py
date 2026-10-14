@@ -13,15 +13,16 @@ fetch the geometry row over HTTP (one ~17-step range-read).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Any
-from luna.config import LROC_VALID_MIN
+from typing import Any
 
-import logging
-import requests
 import numpy as np
 import pvl
+import requests
+
+from luna.config import LROC_VALID_MIN
 
 log = logging.getLogger(__name__)
 
@@ -56,10 +57,10 @@ class NACImage:
     lines: int
     samples: int
     product_id: str
-    center_lon: Optional[float]
-    center_lat: Optional[float]
-    resolution_m: Optional[float]   # meters per pixel on the ground
-    footprint: Optional[dict] = None  # upper_left/right, lower_left/right lat/lon
+    center_lon: float | None
+    center_lat: float | None
+    resolution_m: float | None   # meters per pixel on the ground
+    footprint: dict | None = None  # upper_left/right, lower_left/right lat/lon
     geometry: dict = field(default_factory=dict)  # full INDEX row if fetched
     label: dict = field(default_factory=dict)     # raw PVL, for debugging
 
@@ -82,17 +83,17 @@ def _attach_geometry(img: NACImage, geom: dict) -> None:
         "lower_left": (geom.get("lower_left_longitude"), geom.get("lower_left_latitude")),
         "lower_right": (geom.get("lower_right_longitude"), geom.get("lower_right_latitude")),
     }
-    
+
     # Attach incidence angle and pixel scale (resolution)
     img.incidence_angle = geom.get("incidence_angle") or 45.0
     img.pixel_scale = geom.get("resolution") or 0.5
-    
+
     # Compute approximate sub-solar azimuth
     center_lat = geom.get("center_latitude")
     center_lon = geom.get("center_longitude")
     sun_lat = geom.get("sub_solar_latitude")
     sun_lon = geom.get("sub_solar_longitude")
-    
+
     if None not in (center_lat, center_lon, sun_lat, sun_lon):
         lat1, lon1 = math.radians(center_lat), math.radians(center_lon)
         lat2, lon2 = math.radians(sun_lat), math.radians(sun_lon)
@@ -116,7 +117,7 @@ def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
     # Standardized desktop browser headers from pds_fetch
     from .pds_fetch import DEFAULT_HEADERS
     headers = DEFAULT_HEADERS
-    
+
     params = {
         "_xtype": "text/plain",
         "dsource": "cognac16",
@@ -126,7 +127,7 @@ def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
     }
 
     max_retries = 3
-    base_delay = 5 
+    base_delay = 5
 
     for attempt in range(max_retries):
         try:
@@ -138,12 +139,12 @@ def _query_quickmap(spoly: str) -> list[dict[str, Any]]:
             )
             response.raise_for_status()
             data = response.json()
-            
+
             if "error" in data:
                 raise ValueError(f"QuickMap API error: {data['error']}.")
             if "features" not in data:
                 raise KeyError(f"Unexpected response format from QuickMap: {data}")
-                
+
             return data["features"]
 
         except (requests.exceptions.RequestException, ValueError, KeyError) as e:
@@ -162,16 +163,17 @@ def get_nacs_from_polygon(
     coords: list[tuple[float, float]],
 ) -> list[dict[str, Any]]:
     """Return QuickMap features intersecting an arbitrary polygon on the Moon.
-    
+
     Uses concurrent thread pools to query sub-grid lattices in parallel.
     """
     if len(coords) < 3:
         raise ValueError(f"A polygon requires at least 3 points, got {len(coords)}.")
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import numpy as np
     from shapely.geometry import Polygon, box
     from shapely.validation import make_valid
-    import numpy as np
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     norm_coords = []
     for lon, lat in coords:
@@ -238,14 +240,14 @@ def get_nacs_from_polygon(
         # Execute concurrent network requests (Max 16 parallel workers to avoid brutal rate limits)
         with ThreadPoolExecutor(max_workers=16) as executor:
             future_to_cell = {
-                executor.submit(_query_quickmap, task[2]): (task[0], task[1]) 
+                executor.submit(_query_quickmap, task[2]): (task[0], task[1])
                 for task in tasks
             }
 
             for future in as_completed(future_to_cell):
                 cell_lon, cell_lat = future_to_cell[future]
                 completed_count += 1
-                
+
                 try:
                     features = future.result()
                     for feat in features:

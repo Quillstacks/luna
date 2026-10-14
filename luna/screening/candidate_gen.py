@@ -3,15 +3,16 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Callable, Generator
 
 import numpy as np
 from tqdm import tqdm
 
-from luna.io import LinearProjection, read_nac, pixel_to_lonlat
-from luna.screening.engine import DisruptorEngine, NACTransformer, MappedStripe, push_stripe_to_ring
 from luna.config import RING_SIZE
+from luna.io import LinearProjection, pixel_to_lonlat, read_nac
+from luna.screening.engine import DisruptorEngine, MappedStripe, NACTransformer, push_stripe_to_ring
+
 from .protocols import EmbeddingModel, TileMetadata, VectorStore
 
 log = logging.getLogger(__name__)
@@ -67,83 +68,116 @@ class DataIngestor:
         self.screener = ScreenerEngine(max_batch_size=max_batch_size)
 
     @staticmethod
-    def _build_spice_coord_fn(label_path: Path) -> Callable[[float, float], tuple[float, float]]:
+    def _build_spice_coord_fn(
+        label_path: Path,
+        dem: object | None = None,
+        alt_m: float | None = None,
+    ) -> Callable[[float, float], tuple[float, float]]:
         import pvl
         import spiceypy as sp
-        from luna.io.spice_project import _NAC_PARAMS, _nac_side_from_pid, _read_times, ensure_kernels_for_label
+
+        from luna.io.spice_project import (
+            _NAC_PARAMS,
+            BODY_FRAME,
+            _nac_side_from_pid,
+            _read_times,
+            _spice_call,
+            ensure_kernels_for_label,
+        )
 
         ensure_kernels_for_label(label_path)
-        lbl  = pvl.load(str(label_path))
+        lbl = pvl.load(str(label_path))
         side = _nac_side_from_pid(str(lbl["PRODUCT_ID"]))
-        p    = _NAC_PARAMS[side]
-        et_start, _, line_rate, _, _ = _read_times(label_path)
+        p = _NAC_PARAMS[side]
+        et_start, _, line_rate, _, _ = _read_times(label_path, lbl=lbl)
+        r_moon = float(_spice_call(sp.bodvrd, "MOON", "RADII", 3)[1][0])
+        base_h_km = (float(alt_m) if alt_m is not None else 0.0) / 1000.0
 
         def _fn(x: float, y: float) -> tuple[float, float]:
-            et       = et_start + y * line_rate
-            y_focal  = (x - p["boresight_sample"]) / p["px_per_mm"]
+            et = et_start + y * line_rate
+            y_focal = (x - p["boresight_sample"]) / p["px_per_mm"]
             look_cam = np.array([0.0, y_focal, p["focal_mm"]])
             try:
-                point, _, _ = sp.sincpt(
-                    "Ellipsoid", "MOON", et, "IAU_MOON", "NONE", "LRO", p["frame"], look_cam
-                )
-                _, lon_rad, lat_rad = sp.reclat(point)
-                lon_deg = float(np.rad2deg(lon_rad)) % 360.0
-                return lon_deg, float(np.rad2deg(lat_rad))
+                sc_bf, _ = _spice_call(sp.spkpos, "LRO", et, BODY_FRAME, "NONE", "MOON")
+                rot = _spice_call(sp.pxform, p["frame"], BODY_FRAME, et)
+                d = rot @ look_cam
+                d = d / np.linalg.norm(d)
+                P = np.asarray(sc_bf, dtype=float)
+
+                h_km = base_h_km
+                lon_deg = lat_deg = 0.0
+                for _ in range(6 if dem is not None else 1):
+                    R = r_moon + h_km
+                    b = float(P @ d)
+                    c = float(P @ P) - R * R
+                    disc = b * b - c
+                    if disc < 0:
+                        return 0.0, 0.0
+                    t = -b - np.sqrt(disc)
+                    if t <= 0:
+                        return 0.0, 0.0
+                    X = P + t * d
+                    _, lon_rad, lat_rad = sp.reclat(X)
+                    lon_deg = float(np.rad2deg(lon_rad)) % 360.0
+                    lat_deg = float(np.rad2deg(lat_rad))
+                    if dem is None:
+                        break
+                    try:
+                        h_new = float(dem.get_elevation_m(lon_deg, lat_deg)) / 1000.0  # type: ignore[attr-defined]
+                    except ValueError:
+                        break
+                    if abs(h_new - h_km) < 1e-3:
+                        break
+                    h_km = h_new
+                return lon_deg, lat_deg
             except Exception as e:
-                log.debug("SPICE sincpt failed at (%.1f, %.1f): %s", x, y, e)
+                log.debug("SPICE ray-sphere projection failed at (%.1f, %.1f): %s", x, y, e)
                 return 0.0, 0.0
 
         return _fn
 
     @staticmethod
     def _build_coord_fn(
-        path: Path, img_geometry, lines: int, samples: int
+        path: Path,
+        img_geometry: object,
+        lines: int,
+        samples: int,
+        *,
+        dem: object | None = None,
+        alt_m: float | None = None,
     ) -> Callable[[float, float], tuple[float, float]]:
+        # 1. Primary: Exact SPICE Projection (MOON_ME ray-sphere + optional DEM)
         try:
-            from luna.io.spice_project import ensure_kernels_for_label
-            ensure_kernels_for_label(path)
-            coord_fn = DataIngestor._build_spice_coord_fn(path)
-            # Test projection at center
-            test_lon, test_lat = coord_fn(samples / 2.0, lines / 2.0)
-            if test_lon != 0.0 or test_lat != 0.0:
-                log.info("Using precise SPICE projection for %s", path.name)
-                return coord_fn
+            coord_fn = DataIngestor._build_spice_coord_fn(path, dem=dem, alt_m=alt_m)
+            for sx in (samples / 2.0, 0.0, float(samples)):
+                for sy in (lines / 2.0, 0.0, float(lines)):
+                    test_lon, test_lat = coord_fn(sx, sy)
+                    if test_lon != 0.0 or test_lat != 0.0:
+                        log.info("Using exact SPICE projection for %s", path.name)
+                        return coord_fn
         except Exception as e:
             log.warning("SPICE projection failed (%s), falling back to bilinear ...", e)
 
-        from shapely.geometry import shape
-        
-        # 1. Bilinear Projection
+        # 2. Fallback 1: Bilinear Projection from INDEX corners
         if img_geometry:
             try:
-                proj = LinearProjection.from_nac_geometry(img_geometry, lines=lines, samples=samples)
+                proj = LinearProjection.from_nac_geometry(
+                    img_geometry, lines=lines, samples=samples  # type: ignore[arg-type]
+                )
                 log.info("Using bilinear projection for %s", path.name)
-                return lambda x, y: pixel_to_lonlat(proj, x, y)
+                return lambda x, y: pixel_to_lonlat(proj, int(round(x)), int(round(y)))
             except (ValueError, KeyError, TypeError) as e:
-                log.warning("Bilinear projection failed (%s), falling back to SPICE ...", e)
+                log.warning("Bilinear projection failed (%s), falling back to envelope ...", e)
 
-        # 2. SPICE Projection
-        try:
-            from luna.io.spice_project import ensure_kernels_for_label
-            ensure_kernels_for_label(path)
-            coord_fn = DataIngestor._build_spice_coord_fn(path)
-            
-            for sx in [0, samples // 2, samples]:
-                for sy in [0, lines // 2, lines]:
-                    test_lon, test_lat = coord_fn(sx, sy)
-                    if test_lon != 0.0 or test_lat != 0.0:
-                        log.info("SPICE kernels active for %s", path.name)
-                        return coord_fn
-        except Exception as spice_err:
-            log.warning("SPICE initialization failed: %s", spice_err)
-
-        # 3. Robust Envelope Fallback (Catching None/Empty geometries)
+        # 3. Fallback 2: Robust Envelope Fallback (Catching None/Empty geometries)
         log.warning("All primary projections failed for %s. Applying robust envelope mapping.", path.name)
         try:
             if not img_geometry:
                 min_lon, min_lat, max_lon, max_lat = 0.0, -90.0, 0.0, -75.0
             elif isinstance(img_geometry, dict):
                 if img_geometry.get("type") is not None:
+                    from shapely.geometry import shape
+
                     min_lon, min_lat, max_lon, max_lat = shape(img_geometry).bounds
                 elif "bounds" in img_geometry:
                     min_lon, min_lat, max_lon, max_lat = img_geometry["bounds"]
@@ -158,7 +192,7 @@ class DataIngestor:
             max_lon = 0.0 if np.isnan(max_lon) else max_lon
             min_lat = -90.0 if np.isnan(min_lat) else min_lat
             max_lat = -90.0 if np.isnan(max_lat) else max_lat
-            
+
             return lambda x, y: (
                 min_lon + (x / max(samples, 1)) * (max_lon - min_lon),
                 min_lat + (y / max(lines, 1)) * (max_lat - min_lat)

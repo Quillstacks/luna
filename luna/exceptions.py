@@ -50,3 +50,9 @@ class NACNotFoundError(LunaError):
 class RefinementError(LunaError):
     """Raised when ESSA refinement fails."""
     pass
+
+
+class MissingKernelError(LunaError, RuntimeError):
+    """Raised when SPICE lacks ephemeris, attitude, or frame coverage for the requested epoch."""
+    pass
+

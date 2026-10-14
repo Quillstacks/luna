@@ -13,15 +13,14 @@ from __future__ import annotations
 import logging
 import os
 import time
-
-from luna.exceptions import NACNotFoundError
 from pathlib import Path
-from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from tqdm import tqdm
+from urllib3.util.retry import Retry
+
+from luna.exceptions import NACNotFoundError
 
 from .pds_index import PDSIndex, _normalize_product_id
 
@@ -39,8 +38,8 @@ DEFAULT_HEADERS = {
     "Referer": "https://data.lroc.im-ldi.com/",
 }
 
-_index: Optional[PDSIndex] = None
-_session: Optional[requests.Session] = None
+_index: PDSIndex | None = None
+_session: requests.Session | None = None
 
 
 def _configure_pds_session(session: requests.Session, headers: dict[str, str]) -> requests.Session:
@@ -59,7 +58,7 @@ def _configure_pds_session(session: requests.Session, headers: dict[str, str]) -
     return session
 
 
-def get_pds_session(user_agent: Optional[str] = None) -> requests.Session:
+def get_pds_session(user_agent: str | None = None) -> requests.Session:
     """Creates or returns a configured requests.Session with proper User-Agent, retries, and connection pooling."""
     global _session
     if user_agent is not None:
@@ -82,66 +81,66 @@ def _shared_index() -> PDSIndex:
 
 class BandwidthLimiter:
     """Rate limiter for controlling download bandwidth usage.
-    
+
     Uses a token bucket algorithm to enforce a maximum byte rate.
     Note: The input parameter is in MB/s (Megabytes per second), not Mbps (Megabits).
-    
+
     Attributes:
         max_bytes_per_second: Maximum bytes per second allowed (None = unlimited).
         tokens: Current available tokens (bytes) in the bucket.
         last_update: Timestamp of last token addition.
     """
-    
-    def __init__(self, max_bytes_per_second: Optional[float] = None) -> None:
+
+    def __init__(self, max_bytes_per_second: float | None = None) -> None:
         self.max_bytes_per_second = max_bytes_per_second
         self.tokens: float = 0.0
         self.last_update: float = time.perf_counter()
         if self.max_bytes_per_second is not None:
             self.tokens = float(self.max_bytes_per_second)
-    
+
     def acquire(self, num_bytes: int) -> float:
         """Acquire permission to transfer num_bytes.
-        
+
         Uses a token bucket algorithm to enforce bandwidth limiting.
-        
+
         Args:
             num_bytes: Number of bytes to be transferred.
-            
+
         Returns:
             Time in seconds to sleep before transferring, or 0.0 if no wait needed.
         """
         if self.max_bytes_per_second is None:
             return 0.0
-            
+
         now = time.perf_counter()
         elapsed = now - self.last_update
         self.last_update = now
-        
+
         self.tokens += elapsed * self.max_bytes_per_second
         self.tokens = min(self.tokens, float(self.max_bytes_per_second))
-        
+
         self.tokens -= num_bytes
-        
+
         if self.tokens < 0:
             wait_time = -self.tokens / self.max_bytes_per_second
             self.tokens = 0
             return wait_time
-        
+
         return 0.0
 
 
 def fetch_nac(
     product_id: str,
     dest_dir: str | os.PathLike = "data",
-    url: Optional[str] = None,
+    url: str | None = None,
     force: bool = False,
     retries: int = 3,
     backoff_s: float = 2.0,
     chunk_size: int = 1 << 20,
     timeout: tuple[float, float] | float = (10.0, 30.0),
-    max_bandwidth_mbps: Optional[float] = None,
-    session: Optional[requests.Session] = None,
-    user_agent: Optional[str] = None,
+    max_bandwidth_mbps: float | None = None,
+    session: requests.Session | None = None,
+    user_agent: str | None = None,
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
 
@@ -158,7 +157,7 @@ def fetch_nac(
     Retries on transient network errors (``ConnectionError``, ``Timeout``,
     ``ChunkedEncodingError``, ``HTTPError``) with exponential backoff; partial temporary files
     are discarded between attempts.
-    
+
     Args:
         product_id: LROC NAC product ID to download.
         dest_dir: Destination directory for the downloaded file.
@@ -175,10 +174,10 @@ def fetch_nac(
             saturation. Example: 10 = 10 MB/s = 80 Mbps.
         session: Optional pre-configured requests.Session (defaults to get_pds_session()).
         user_agent: Optional custom User-Agent string.
-    
+
     Returns:
         Path to the downloaded .IMG file.
-    
+
     Raises:
         NACNotFoundError: If download fails after all retry attempts.
     """
@@ -193,19 +192,19 @@ def fetch_nac(
 
     resolved = url or _shared_index().url_for(product_id)
     http_session = session or get_pds_session(user_agent)
-    
+
     # Initialize bandwidth limiter if limit is specified
     bandwidth_limiter = BandwidthLimiter(
         max_bytes_per_second=(max_bandwidth_mbps * (1024 ** 2)) if max_bandwidth_mbps is not None else None
     )
-    
+
     transient = (
         requests.exceptions.ConnectionError,
         requests.exceptions.Timeout,
         requests.exceptions.ChunkedEncodingError,
         requests.exceptions.HTTPError,
     )
-    last_err: Optional[Exception] = None
+    last_err: Exception | None = None
     for attempt in range(1, retries + 1):
         try:
             # Differentiated timeout (connect_timeout, read_timeout) with configured session
@@ -225,7 +224,7 @@ def fetch_nac(
                             wait_time = bandwidth_limiter.acquire(len(chunk))
                             if wait_time > 0:
                                 time.sleep(wait_time)
-                        
+
                         f.write(chunk)
                         bar.update(len(chunk))
 

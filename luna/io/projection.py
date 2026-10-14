@@ -20,12 +20,17 @@ NAC scales.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
 from .nac_reader import NACImage, read_nac
 from .pds_fetch import fetch_nac
 
-import numpy as np
+log = logging.getLogger(__name__)
 
 
 def _affine_guess(
@@ -34,7 +39,7 @@ def _affine_guess(
     lon = corners_ll[:, 0]
     lat = corners_ll[:, 1]
     M = np.stack([lon, lat, np.ones(4)], axis=1)
-    fwd, *_ = np.linalg.lstsq(M, corners_uv, rcond=None) 
+    fwd, *_ = np.linalg.lstsq(M, corners_uv, rcond=None)
     u = corners_uv[:, 0]
     v = corners_uv[:, 1]
     Muv = np.stack([u, v, np.ones(4)], axis=1)
@@ -58,8 +63,8 @@ class LinearProjection:
         _affine_inv: Inverse affine matrix from (u, v) to (lon, lat).
     """
 
-    lon_corners: np.ndarray 
-    lat_corners: np.ndarray  
+    lon_corners: np.ndarray
+    lat_corners: np.ndarray
     samples: int
     lines: int
     _affine_fwd: np.ndarray
@@ -69,9 +74,9 @@ class LinearProjection:
     def from_nac_geometry(
         cls,
         geom: dict,
-        samples: Optional[int] = None,
-        lines: Optional[int] = None,
-    ) -> "LinearProjection":
+        samples: int | None = None,
+        lines: int | None = None,
+    ) -> LinearProjection:
         """Instantiate a LinearProjection from a PDS INDEX geometry dictionary.
 
         Automatically inspects orbit direction (ascending vs. descending passes)
@@ -96,13 +101,13 @@ class LinearProjection:
         """
         raw_samples = samples if samples is not None else geom.get("line_samples")
         raw_lines = lines if lines is not None else geom.get("image_lines")
-        
+
         if raw_samples is None or raw_lines is None:
             raise ValueError("Missing image dimensions (lines/samples) in geometry.")
-            
+
         W = int(raw_samples)
         H = int(raw_lines)
-        
+
         try:
             ul_lon = float(geom["upper_left_longitude"])
             ur_lon = float(geom["upper_right_longitude"])
@@ -151,9 +156,9 @@ class LinearProjection:
 
         uv_c = np.array([[0, 0], [1, 0], [0, 1], [1, 1]], dtype=np.float64)
         ll_c = np.stack([lon_c, lat_c], axis=1)
-        
+
         fwd_affine, inv_affine = _affine_guess(ll_c, uv_c)
-        
+
         return cls(
             lon_corners=lon_c, lat_corners=lat_c,
             samples=W, lines=H,
@@ -198,55 +203,96 @@ def get_image_of_roi(
     lon: float,
     width: int = 256,
     height: int = 256,
+    *,
+    use_spice: bool = True,
+    alt_m: float | None = None,
+    dem: Any | None = None,
+    kernel_root: Path | str | None = None,
 ) -> np.ndarray:
     """Crop a region of interest from a NAC frame centred on a lon/lat point.
 
-    Fetches the NAC CDR from PDS if not cached locally, builds a bilinear
-    projection from the INDEX geometry, converts the target coordinate to pixel
-    space, and returns the surrounding ``width × height`` tile.
+    Fetches the NAC CDR from PDS if not cached locally, projects the target
+    coordinate to pixel space (prioritizing exact SPICE pushbroom projection via
+    :func:`~luna.io.spice_project.ground_to_image` and falling back to bilinear
+    INDEX corner projection if SPICE kernels are unavailable), and returns the
+    surrounding ``width × height`` tile.
 
     Pixels outside the image boundary are padded with ``NaN``.
 
-    Parameters
-    ----------
-    product_id:
-        LROC NAC product ID (e.g. ``"M102285549LE"``).
-    lat:
-        Geodetic latitude of the ROI centre in degrees (positive north).
-    lon:
-        Longitude of the ROI centre in degrees (positive east, 0–360).
-    width:
-        Tile width in pixels (default 256).
-    height:
-        Tile height in pixels (default 256).
+    Args:
+        product_id: LROC NAC product ID (e.g. ``"M102285549LE"``).
+        lat: Planetocentric latitude of the ROI centre in degrees (positive north).
+        lon: Planetocentric longitude of the ROI centre in degrees (positive east, 0–360).
+        width: Tile width in pixels (default 256).
+        height: Tile height in pixels (default 256).
+        use_spice: If True (default), prioritize exact SPICE projection before
+            falling back to bilinear corner interpolation.
+        alt_m: Optional surface elevation in meters relative to the 1737.4 km
+            reference sphere (passed to SPICE ``ground_to_image``).
+        dem: Optional :class:`~luna.io.dem.LunarDEM` for terrain elevation lookup.
+        kernel_root: Optional root directory of SPICE kernels.
 
-    Returns
-    -------
-    np.ndarray
-        Float32 array of shape ``(height, width)``.  Invalid / masked pixels
+    Returns:
+        Float32 array of shape ``(height, width)``. Invalid or masked pixels
         are ``NaN``.
 
-    Raises
-    ------
-    ValueError
-        If the projected pixel centre lies entirely outside the NAC frame.
+    Raises:
+        ValueError: If the projected pixel centre lies outside the NAC frame, or
+            if both ``alt_m`` and ``dem`` are provided.
     """
-    path = fetch_nac(product_id, dest_dir="data/_scratch")
-    img: NACImage = read_nac(path, geometry=True)
-    proj = LinearProjection.from_nac_geometry(
-        img.geometry, samples=img.samples, lines=img.lines
-    )
+    if alt_m is not None and dem is not None:
+        raise ValueError("pass either alt_m or dem, not both")
 
-    u, v = proj._solve_uv(lon, lat)
-    col_f = u * (proj.samples - 1)
-    row_f = v * (proj.lines - 1)
+    path = fetch_nac(product_id, dest_dir="data/_scratch")
+    col_f: float | None = None
+    row_f: float | None = None
+    img: NACImage | None = None
+
+    if use_spice:
+        try:
+            from .spice_project import ground_to_image
+
+            col_f, row_f = ground_to_image(
+                path,
+                lon,
+                lat,
+                alt_m=alt_m,
+                kernel_root=kernel_root,
+                dem=dem,
+            )
+            img = read_nac(path, geometry=False)
+        except ValueError as e:
+            if "outside NAC exposure window" in str(e) or "alt_m or dem" in str(e):
+                raise
+            log.warning(
+                "SPICE ground_to_image failed for %s (%s); falling back to LinearProjection.",
+                product_id,
+                e,
+            )
+        except Exception as e:
+            log.warning(
+                "SPICE ground_to_image unavailable for %s (%s); falling back to LinearProjection.",
+                product_id,
+                e,
+            )
+
+    if col_f is None or row_f is None or img is None:
+        img = read_nac(path, geometry=True)
+        proj = LinearProjection.from_nac_geometry(
+            img.geometry, samples=img.samples, lines=img.lines
+        )
+        u, v = proj._solve_uv(lon, lat)
+        col_f = u * (proj.samples - 1)
+        row_f = v * (proj.lines - 1)
 
     col = int(np.floor(col_f))
     row = int(np.floor(row_f))
 
     if (
-        col < -width or col >= img.samples + width or
-        row < -height or row >= img.lines + height
+        col < -width
+        or col >= img.samples + width
+        or row < -height
+        or row >= img.lines + height
     ):
         raise ValueError(
             f"Coordinate (lat={lat}, lon={lon}) projects to ({col_f:.2f}, {row_f:.2f}), "
@@ -254,7 +300,7 @@ def get_image_of_roi(
         )
 
     r0 = row - height // 2
-    c0 = col - width  // 2
+    c0 = col - width // 2
     r1 = r0 + height
     c1 = c0 + width
 

@@ -1,11 +1,12 @@
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
 import requests
-from unittest.mock import MagicMock, patch
-from pathlib import Path
 
-from luna.io.pds_index import PDSIndex
+from luna.exceptions import IndexError as LunaIndexError
 from luna.io.pds_fetch import fetch_nac
-from luna.exceptions import IndexError as LunaIndexError, NACNotFoundError
+from luna.io.pds_index import PDSIndex
 
 
 def test_pds_index_read_record_retry_on_429():
@@ -73,7 +74,7 @@ def test_pds_fetch_retry_on_http_error(tmp_path: Path):
 
 def test_get_pds_session():
     """Test get_pds_session configuration and custom user agent."""
-    from luna.io.pds_fetch import get_pds_session, DEFAULT_USER_AGENT
+    from luna.io.pds_fetch import DEFAULT_USER_AGENT, get_pds_session
 
     session_default = get_pds_session()
     assert session_default.headers.get("User-Agent") == DEFAULT_USER_AGENT
