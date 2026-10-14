@@ -46,7 +46,7 @@ hits = pipeline.scan(
 
 print(f"Identified {len(hits)} high-probability candidates.")
 for hit in hits:
-    print(f"Rank {hit.rank}: ({hit.lon:.4f}°, {hit.lat:.4f}°) | Offset: ({hit.x_offset}, {hit.y_offset}) px | Score: {hit.score:.2f}")
+    print(f"Rank {hit.rank}: ({hit.lon:.4f} deg, {hit.lat:.4f} deg) | Offset: ({hit.x_offset}, {hit.y_offset}) px | Score: {hit.score:.2f}")
 ```
 
 ---

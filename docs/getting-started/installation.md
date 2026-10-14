@@ -100,14 +100,14 @@ For DINOv3 feature encoding and Stage-2 Mask R-CNN decoders, ensure PyTorch dete
 The local kernel directory structure is stored under:
 ```text
 data/spice/lro/
-├── lsk/          # Leapsecond kernels (.tls)
-├── sclk/         # Spacecraft clock kernels (.tsc)
-├── pck/          # Planetary constants (.bpc, .tpc)
-├── fk/           # Frame definitions (.tf)
-├── ik/           # Instrument kernels (.ti)
-├── spk/          # Spacecraft & planetary ephemeris (.bsp)
-├── ck/           # Spacecraft & instrument attitude (.bc)
-└── mk/           # NAIF year metakernels (.tm)
+|-- lsk/          # Leapsecond kernels (.tls)
+|-- sclk/         # Spacecraft clock kernels (.tsc)
+|-- pck/          # Planetary constants (.bpc, .tpc)
+|-- fk/           # Frame definitions (.tf)
+|-- ik/           # Instrument kernels (.ti)
+|-- spk/          # Spacecraft & planetary ephemeris (.bsp)
+|-- ck/           # Spacecraft & instrument attitude (.bc)
+`-- mk/           # NAIF year metakernels (.tm)
 ```
 
 You can pre-warm kernels for a specific date:

@@ -1,20 +1,20 @@
 # LUNA
 
-> **L.U.N.A.** — *Lots of Unexplained NAC Anomalies*  
+> **L.U.N.A.** - *Lots of Unexplained NAC Anomalies*  
 > Python library for lunar pit detection, SPICE photogrammetry, and orbital imagery analysis on NASA LROC NAC products.
 
 ---
 
 ## Key Features
 
-- **SPICE Photogrammetry (`luna.io`)**: Pushbroom camera model implementing ground-to-image and image-to-ground ray-tracing directly in Python via `spiceypy`.
-- **Targeted SPICE Pool Management**: On-demand kernel loading (`furnish_kernels_for_date`) to prevent CSPICE DAF-handle table exhaustion across multi-year missions.
-- **Topography & Elevation Correction**: Parallax compensation using LOLA lunar elevations (`alt_m` via planetocentric `sp.latrec`).
-- **Ascending & Descending Orbit Support**: Automatic flight-direction detection and corner-mapping in `LinearProjection`.
+- **SPICE Photogrammetry (`luna.io.spice_project`)**: Pushbroom camera model in the `MOON_ME` Mean-Earth/Polar-Axis body-fixed frame implementing 1D bisection `ground_to_image` and analytical ray-sphere / iterative DEM `image_to_ground` ray-tracing directly in Python via `spiceypy`.
+- **Targeted SPICE Pool Management**: On-demand kernel fetching and loading (`ensure_kernels_for_date`, `furnish_kernels_for_date`) with structured `MissingKernelError` handling to prevent CSPICE DAF-handle table exhaustion across multi-year missions.
+- **Optional Topography & Elevation Correction (`luna.io.dem`)**: Parallax compensation using explicit `alt_m` or automated SLDEM2015 tile lookups via `LunarDEM` (`fetch_dem_for_region`, `default_dem`) with GDAL `.aux.xml` vertical scale validation.
+- **SPICE-First ROI Extraction & Orbit Support (`luna.io.projection`)**: `get_image_of_roi` prioritizes exact SPICE projection before falling back to `LinearProjection` with automatic ascending/descending flight-direction detection.
 - **Vision Models (`luna.models`)**: Feature extraction with DINOv3 Vision Transformers, Stage-2 decoders, and boundary refiners.
 - **Screening Pipeline (`luna.screening`)**: Disruptor ring-buffer paired with native C++ `Pithos` binary embedding search for candidate retrieval.
 - **Latent Manifold Analysis (`luna.latent_map`)**: UMAP projections, metric estimations, and topology inspection of lunar terrain.
-- **PDS Resolution**: Binary search index lookup over fixed-width PDS3 `INDEX.TAB` archives via HTTP range requests.
+- **PDS Resolution (`luna.io.pds_index`)**: Binary search index lookup over NASA MCP PDS4 mirrors and dynamic JPL volume directories via HTTP range requests with CSV-first geometry parsing.
 
 ---
 
@@ -23,17 +23,20 @@
 ```mermaid
 flowchart TD
     subgraph Data["1. Data Ingestion Layer"]
-        PDS["NASA PDS Archive"] -->|HTTP Range Lookup| PDSIndex["luna.io.PDSIndex"]
+        PDS["NASA PDS / MCP Archive"] -->|HTTP Range Lookup| PDSIndex["luna.io.PDSIndex"]
         PDSIndex -->|Archive URL| Fetch["luna.io.fetch_nac"]
         Fetch -->|1MB Chunk Stream| Reader["luna.io.read_nac"]
         NAIF["NASA NAIF Archive"] -->|Targeted SPICE Fetch| Kernels["luna.io.kernel_fetch"]
+        SLDEM["SLDEM2015 Archive"] -->|Tile & AUX.XML Fetch| DEM["luna.io.LunarDEM"]
     end
 
     subgraph Photogrammetry["2. Photogrammetry & Projection"]
-        Kernels -->|On-Demand Kernels| SPICE["luna.io.spice_project"]
+        Kernels -->|On-Demand Kernels| SPICE["luna.io.spice_project (MOON_ME)"]
+        DEM -->|Optional Elevation| SPICE
         Reader -->|Timing & Corners| Proj["luna.io.LinearProjection"]
-        SPICE -->|1D Bisection Raytrace + alt_m| CoordMap["Exact Ground Mapping (Sample, Line) ⟷ (Lon, Lat)"]
-        Proj -->|Bilinear Newton Solver| CoordMap
+        SPICE -->|Bisection & Analytical Ray-Sphere| CoordMap["Exact Ground Mapping (Sample, Line) <-> (Lon, Lat)"]
+        Proj -->|Fallback 2D Newton Solver| CoordMap
+        CoordMap -->|SPICE-First Crop| ROI["luna.io.get_image_of_roi"]
     end
 
     subgraph Pipeline["3. Screening & Streaming Engine"]
@@ -58,20 +61,27 @@ flowchart TD
 ## Quick Example
 
 ```python
+from luna.io.dem import LunarDEM, fetch_dem_for_region
 from luna.io.pds_fetch import fetch_nac
-from luna.io.spice_project import ground_to_image
+from luna.io.spice_project import ground_to_image, image_to_ground
 
 # 1. Fetch NAC product on-demand from PDS
 img_path = fetch_nac("M1118880788RC", dest_dir="data/_scratch")
 
-# 2. Project lunar ground coordinates (lon, lat, elevation) to exact pixel coordinates
-# Example: Marius Hills Skylight (alt = -2010 m relative to lunar sphere)
+# 2. Project lunar ground coordinates (lon, lat, optional elevation/DEM) to pixel coordinates
+# Example: Marius Hills Skylight (alt = -2010 m relative to 1737.4 km lunar sphere)
 sample_px, line_px = ground_to_image(
     img_path,
     lon_deg=303.228,
     lat_deg=14.091,
-    alt_m=-2010.0
+    alt_m=-2010.0,
 )
+
+# Or use automated SLDEM2015 terrain lookup via LunarDEM:
+tiles = fetch_dem_for_region(min_lat=13.5, max_lat=14.5, min_lon=302.5, max_lon=304.0)
+with LunarDEM(tiles) as dem:
+    sample_px, line_px = ground_to_image(img_path, lon_deg=303.228, lat_deg=14.091, dem=dem)
+    lon_deg, lat_deg = image_to_ground(img_path, sample=sample_px, line=line_px, dem=dem)
 
 print(f"Target pixel coordinate: Sample = {sample_px:.2f}, Line = {line_px:.2f}")
 ```

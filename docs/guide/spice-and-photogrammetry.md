@@ -105,7 +105,7 @@ loaded_count = furnish_kernels_for_date(dt)
 
 ## 4. Optional Topography & DEM Integration (`alt_m` & `LunarDEM`)
 
-Elevation and DEM inputs are **completely optional** — omitting both `alt_m` and `dem` projects onto the $1737.4\text{ km}$ lunar reference sphere ($alt = 0\text{ m}$).
+Elevation and DEM inputs are **completely optional** - omitting both `alt_m` and `dem` projects onto the $1737.4\text{ km}$ lunar reference sphere ($alt = 0\text{ m}$).
 
 For off-nadir NAC observations (emission angle $> 5^\circ$), passing an explicit `alt_m` or a `LunarDEM` instance eliminates horizontal parallax displacement:
 

@@ -6,14 +6,15 @@
 
 ## 1. PDS Binary-Search Index Resolver (`PDSIndex`)
 
-The LROC CDR archive is distributed across $\sim 35$ volumes (`LROLRC_1001` through `LROLRC_1035`), containing millions of entries in fixed-width `INDEX.TAB` files.
+The LROC CDR archive is distributed across $\sim 65+$ volumes (`LROLRC_1001` through `LROLRC_1065+` on the NASA MCP PDS4 mirror and JPL/ASU mirrors), containing millions of entries in fixed-width `INDEX.TAB` files.
 
 `PDSIndex` resolves any product ID to its full PDS URL in **$< 50\text{ ms}$** via HTTP Range Requests:
 
-1. **Volume Characterization**: Fetches the first and last `PRODUCT_ID` of each volume index to determine bounding intervals.
+1. **Dynamic Volume Discovery & Characterization**: Discovers available volumes (including new releases via JPL directory listing) and fetches the first and last `PRODUCT_ID` of each volume index to determine bounding intervals.
 2. **Binary Search**: Performs logarithmic binary search over byte ranges in the matching volume's `INDEX.TAB`.
-3. **HTTP 429 Resiliency**: Range requests include automated exponential backoff (`1.0 * 2^attempt`) and `urllib3.util.Retry` adapters configured for status codes `429`, `500`, `502`, `503`, and `504`.
-4. **Local Cache**: Caches volume boundaries in `data/pds_volume_index_cdr.json`.
+3. **CSV-First Geometry Parsing**: Parses 21 observation geometry fields via CSV column positions first, falling back to fixed-width byte slices (`GEOMETRY_SLICES`) if needed.
+4. **HTTP 429 Resiliency**: Range requests include automated exponential backoff (`1.0 * 2^attempt`) and `urllib3.util.Retry` adapters configured for status codes `429`, `500`, `502`, `503`, and `504`.
+5. **Local Cache**: Caches volume boundaries in `data/pds_volume_index_cdr.json`.
 
 ```python
 from luna.io.pds_index import PDSIndex
@@ -26,7 +27,7 @@ print(f"PDS URL: {url}")
 
 # Fetch full geometry metadata row
 geom = idx.geometry_for("M1118880788RC")
-print(f"Emission angle: {geom['emission_angle']}°, Resolution: {geom['resolution']} m/px")
+print(f"Emission angle: {geom['emission_angle']} deg, Resolution: {geom['resolution']} m/px")
 ```
 
 ---
@@ -74,6 +75,16 @@ from luna.io.nac_reader import read_nac
 nac = read_nac("data/_scratch/M1118880788RC.IMG", geometry=True)
 
 print(f"Lines: {nac.lines}, Samples: {nac.samples}")
-print(f"Center: ({nac.center_lon:.3f}°, {nac.center_lat:.3f}°)")
+print(f"Center: ({nac.center_lon:.3f} deg, {nac.center_lat:.3f} deg)")
 print(f"Valid pixel ratio: {np.isfinite(nac.pixels).mean() * 100:.1f}%")
 ```
+
+---
+
+## 4. Optional SLDEM2015 Terrain Fetching (`luna.io.dem`)
+
+`luna.io.dem` provides optional on-demand downloading and window-based querying of NASA LOLA + Kaguya SLDEM2015 tiles (`512 ppd`, `~59 m/px`):
+
+* **Tile Resolution (`get_sldem2015_tile_name`)**: Maps planetocentric `(lat_deg, lon_deg)` in `[-60, +60]` latitude to 30x45 degree SLDEM2015 tile stems.
+* **GDAL Sidecar Scale Validation (`fetch_dem_for_region`, `LunarDEM`)**: Downloads both the `.JP2` raster and its `.JP2.aux.xml` GDAL sidecar (`<Scale>0.5</Scale>`), verifying the `0.5 m/DN` vertical scaling factor on open.
+* **Singleton Convenience (`default_dem`)**: Opens all tiles under `data/dem` (or `LUNA_DEM_DIR`) as a shared `LunarDEM` instance.

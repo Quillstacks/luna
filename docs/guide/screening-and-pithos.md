@@ -8,16 +8,16 @@
 
 To prevent I/O bottlenecks when processing 500 MB to 1 GB raw raster files, `luna.screening.engine` uses a lock-free Disruptor ring buffer architecture implemented in Cython/C++:
 
-```
+```text
 [ Disk / Memory-Mapped File (MappedStripe) ]
-                    │
-                    ▼ (Zero-copy raw pointers)
+                    |
+                    v (Zero-copy raw pointers)
 [ Disruptor Ring Buffer (DisruptorEngine) ]
-                    │
-                    ▼ (SIMD Normalization & Slicing)
+                    |
+                    v (SIMD Normalization & Slicing)
 [ Fast Tensor Slicer (NACTransformer) ]
-                    │
-                    ▼ (Batch GPU Producer)
+                    |
+                    v (Batch GPU Producer)
 [ PyTorch DINOv3 Feature Encoder ]
 ```
 
