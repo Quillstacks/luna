@@ -8,19 +8,17 @@ Two classes:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
 from PIL import Image
-from pycocotools.coco import COCO
 from pycocotools import mask as mask_utils
+from pycocotools.coco import COCO
 from torch.utils.data import Dataset
 from torchvision.models import ResNet50_Weights
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
-
 
 NUM_CLASSES_DEFAULT = 2  # background + pit
 ESSA_NUM_CLASSES = 3     # background + skylight + pit (Le Corre et al. 2025)
@@ -40,7 +38,7 @@ def build_maskrcnn(num_classes: int = NUM_CLASSES_DEFAULT, pretrained: bool = Tr
     return model
 
 
-def build_essa_model(checkpoint: Optional[str | Path] = None,
+def build_essa_model(checkpoint: str | Path | None = None,
                      map_location: str = "cpu") -> torch.nn.Module:
     """Mask R-CNN wired to match Le Corre et al. (2025) ESSA exactly.
 

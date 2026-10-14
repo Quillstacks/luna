@@ -2,21 +2,17 @@ from __future__ import annotations
 
 import gc
 import logging
-import pickle
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import torch
-import numpy as np
 
-from luna.config import (
-    INDEX_DIR, SCRATCH_DIR, TILE_SIZE, STRIDE, MAX_BATCH_SIZE, LunaConfig
-)
+from luna.config import LunaConfig
 from luna.io.pds_fetch import fetch_nac
 from luna.screening.candidate_gen import DataIngestor
-from luna.storage.pithos_store import PithosStore
 from luna.screening.protocols import TileMetadata
+from luna.storage.pithos_store import PithosStore
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +69,7 @@ class LunaIngestor:
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> list[str]:
         """Download raw images and compile their Pithos indexes.
-        
+
         Returns a list of successfully ingested product IDs.
         """
         if isinstance(product_ids, str):
@@ -86,24 +82,24 @@ class LunaIngestor:
         import queue
         import threading
         from concurrent.futures import ThreadPoolExecutor
-        
+
         download_queue = queue.Queue(maxsize=4)
-        
+
         def download_task(pid):
             nac_path = scratch_dir / f"{pid}.IMG"
             index_prefix = str(index_dir / f"pithos_{pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
-            
+
             if not force_reingest and index_exists and nac_path.exists():
                 download_queue.put((pid, nac_path, None))
                 return
-            
+
             if not nac_path.exists():
                 try:
                     log.info("Background Downloader: Fetching %s from PDS …", pid)
                     max_bandwidth = getattr(self._config, 'max_bandwidth_mbps', None)
                     fetched_path = fetch_nac(
-                        pid, 
+                        pid,
                         dest_dir=scratch_dir,
                         max_bandwidth_mbps=max_bandwidth
                     )
@@ -113,7 +109,7 @@ class LunaIngestor:
                     download_queue.put((pid, nac_path, e))
             else:
                 download_queue.put((pid, nac_path, None))
-        
+
         def downloader_worker():
             try:
                 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -122,7 +118,7 @@ class LunaIngestor:
                 log.warning("Downloader worker received interrupt signal.")
             except Exception as e:
                 log.error("Downloader worker crashed: %s", e)
-                    
+
         downloader_thread = threading.Thread(target=downloader_worker, daemon=True)
         downloader_thread.start()
 
@@ -145,21 +141,21 @@ class LunaIngestor:
                 t_ingest_start = time.perf_counter()
                 store, metadata = self._ingest(nac_path)
                 t_ingest_elapsed = time.perf_counter() - t_ingest_start
-                
+
                 if trace is not None:
                     trace[f"ingest_s_{pid}"] = t_ingest_elapsed
                     trace[f"ingest_tiles_{pid}"] = len(store._metadata)
                     trace[f"ingest_tiles_per_s_{pid}"] = len(store._metadata) / t_ingest_elapsed if t_ingest_elapsed > 0 else 0
-                
+
                 t_compile_start = time.perf_counter()
                 index_path = self._save_index(store, nac_path)
                 t_compile_elapsed = time.perf_counter() - t_compile_start
-                
+
                 if trace is not None:
                     trace[f"index_compile_s_{pid}"] = t_compile_elapsed
                     if index_path.exists():
                         trace[f"index_size_bytes_{pid}"] = index_path.stat().st_size
-                
+
                 del store
                 gc.collect()
             else:

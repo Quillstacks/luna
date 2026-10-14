@@ -1,7 +1,8 @@
 import json
-import numpy as np
-from pathlib import Path
 import logging
+from pathlib import Path
+
+import numpy as np
 
 log = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import pickle
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -52,8 +52,8 @@ class ManifoldDatasetConverter:
 
         log.info("Processing %d index files for Parquet conversion...", len(meta_files))
 
-        all_rows: List[Dict[str, Any]] = []
-        all_vecs: List[np.ndarray] = []
+        all_rows: list[dict[str, Any]] = []
+        all_vecs: list[np.ndarray] = []
 
         # Prepare reference bit packing for Hamming distance calculation if anchors provided
         bits_anchors = None

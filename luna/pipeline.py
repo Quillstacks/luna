@@ -11,6 +11,7 @@ Typical usage::
 from __future__ import annotations
 
 import os
+
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["MKL_NUM_THREADS"] = "1"
 
@@ -18,25 +19,27 @@ import gc
 import logging
 import pickle
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal, overload, Union
+from typing import Literal, overload
 
 import numpy as np
 import torch
 
 from luna.config import (
-    DINO_DIM, FINAL_TOP_K, INDEX_DIR, LROC_VALID_MIN,
-    MAX_BATCH_SIZE, MIN_DIST_PX, SCRATCH_DIR, SEARCH_K,
-    STRIDE, TILE_SIZE, LunaConfig,
+    DINO_DIM,
+    LROC_VALID_MIN,
+    MAX_BATCH_SIZE,
+    LunaConfig,
 )
 from luna.io.pds_fetch import fetch_nac
+from luna.metrics import MetricsReport
+from luna.models import RefinedHit
 from luna.screening.candidate_gen import DataIngestor
 from luna.screening.pithos import PithosMIDB
 from luna.screening.protocols import TileMetadata
 from luna.storage.pithos_store import PithosStore
-from luna.models import RefinedHit
-from luna.metrics import MetricsReport
 
 log = logging.getLogger(__name__)
 
@@ -110,8 +113,8 @@ def apply_lunar_spatial_nms(hits: list, distance_threshold_meters: float = 150.0
 
     first_hit = hits[0]
     is_refined = (
-        hasattr(first_hit, "dino_similarity") or 
-        hasattr(first_hit, "essa_score") or 
+        hasattr(first_hit, "dino_similarity") or
+        hasattr(first_hit, "essa_score") or
         (isinstance(first_hit, dict) and ("dino_similarity" in first_hit or "essa_score" in first_hit))
     )
 
@@ -307,14 +310,14 @@ class LunaPipeline:
         can be reused across multiple NACs without re-encoding.
         """
         query_path = Path(query_dir)
-        
+
         # 1. If query_dir points directly to a precompiled file
         if query_path.is_file():
             arr = np.load(query_path).astype(np.float32)
             if arr.ndim == 2 and arr.shape[1] == 384:
                 log.info("Loaded query database from file %s, shape %s.", query_path.name, arr.shape)
                 return arr
-                
+
         # 2. If query_dir is a directory, check for precompiled files first
         if query_path.is_dir():
             # Check locally in query_dir
@@ -323,7 +326,7 @@ class LunaPipeline:
                 # Check in standard data directory
                 from luna.config import DATA_DIR
                 ref_file = DATA_DIR / "dino_reference.npy"
-                
+
             if ref_file.exists():
                 arr = np.load(ref_file).astype(np.float32)
                 if arr.ndim == 2 and arr.shape[1] == 384:
@@ -364,7 +367,7 @@ class LunaPipeline:
 
     def _load_and_encode_pit_queries(self, pits_dir: str | Path, base_threshold: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Load all pit patches from directory, encode via DINOv3, and assign family IDs.
-        
+
         Returns
         -------
         queries : np.ndarray, shape (N, 384) float32
@@ -373,12 +376,12 @@ class LunaPipeline:
         """
         pits_path = Path(pits_dir)
         pit_files = sorted(pits_path.glob("*.npy"))
-        
+
         if not pit_files:
             raise FileNotFoundError(f"No pit .npy files found in {pits_dir}")
-        
+
         log.info("Loading %d pit patches from %s...", len(pit_files), pits_dir)
-        
+
         # Collect all raw pit images
         pit_images = []
         from PIL import Image
@@ -388,10 +391,10 @@ class LunaPipeline:
                 if img.shape != (256, 256):
                     img = np.array(Image.fromarray(img).resize((256, 256), Image.Resampling.BILINEAR))
                 pit_images.append(img)
-        
+
         if not pit_images:
             raise ValueError("No valid pit images found")
-        
+
         # Normalize and batch encode
         normalized = []
         for img in pit_images:
@@ -399,32 +402,32 @@ class LunaPipeline:
             lo, hi = (valid.min(), valid.max()) if valid.size > 0 else (0.0, 1.0)
             norm = np.clip((img - lo) / (hi - lo + 1e-6), 0, 1)
             normalized.append(norm)
-        
+
         # Batch encode in chunks to avoid OOM
         batch_size = self._config.max_batch_size if self._config else 64
         all_embeddings = []
-        
+
         for i in range(0, len(normalized), batch_size):
             batch_imgs = normalized[i:i + batch_size]
             batch_input = np.stack([(img * 255).astype(np.uint8) for img in batch_imgs])
             embeddings = self._encoder.encode(batch_input)
             all_embeddings.append(embeddings)
-        
+
         queries = np.concatenate(all_embeddings, axis=0).astype(np.float32)
         num_queries = len(queries)
-        
+
         import hashlib
         families = np.zeros(num_queries, dtype=np.int32)
         for i, f in enumerate(pit_files):
             h = int(hashlib.md5(f.stem.encode('utf-8')).hexdigest(), 16)
             family_id = h % 8
             families[i] = family_id
-        
+
         # Define per-query Hamming thresholds
         if base_threshold is None:
             base_threshold = getattr(self._config, "pithos_base_threshold", 42)
         thresholds = np.full(num_queries, base_threshold, dtype=np.int32)
-        
+
         # Apply family-based scaling
         family_counts = np.bincount(families, minlength=8)
         for i in range(num_queries):
@@ -432,19 +435,19 @@ class LunaPipeline:
             count_factor = max(1, 10 - family_counts[family_id] // 4)
             max_cap = max(63, base_threshold)
             thresholds[i] = min(max_cap, max(16, base_threshold - count_factor))
-        
+
         if self._device == "mps":
             torch.mps.empty_cache()
         elif self._device == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
-        
+
         log.info(
             "Encoded %d pit queries: shape %s, families: %s, threshold range: [%d, %d]",
             num_queries, queries.shape, np.unique(families, return_counts=True),
             thresholds.min(), thresholds.max()
         )
-        
+
         return queries, families, thresholds
 
     # ------------------------------------------------------------------
@@ -469,7 +472,7 @@ class LunaPipeline:
         families : np.ndarray, shape (N,) int32 or None
         thresholds : np.ndarray, shape (N,) int32 or None
         k : int — used only for legacy KNN mode
-        
+
         Returns
         -------
         candidate_indices : list[int] — indices of candidate tiles
@@ -478,12 +481,12 @@ class LunaPipeline:
         index_bin  = f"{index_prefix}.bin"
         index_name = Path(index_prefix).stem
         total_records = len(metadata)
-        
+
         log.info("Loading Pithos index %s …", index_bin)
-        
+
         db = PithosMIDB()
         db.load_index(index_name, index_bin)
-        
+
         if families is not None and thresholds is not None:
             # Multi-Family Resonant Voting mode
             log.info(
@@ -491,9 +494,9 @@ class LunaPipeline:
                 len(query_vecs_f32), len(np.unique(families))
             )
             t_scan_start = time.perf_counter()
-            
+
             voting_mask = np.zeros(total_records, dtype=np.uint8)
-            
+
             resonant_count = db.query_planetary_grid(
                 index_name=index_name,
                 queries=query_vecs_f32,
@@ -501,14 +504,14 @@ class LunaPipeline:
                 thresholds=thresholds.astype(np.int32),
                 voting_mask=voting_mask,
             )
-            
+
             if trace is not None:
                 trace["p1_pithos_resonant_voting"] = time.perf_counter() - t_scan_start
-            
+
             db.drop_index(index_name)
-            
+
             candidate_indices = np.where(voting_mask != 0)[0].tolist()
-            
+
             log.info(
                 "Resonant voting retrieved %d candidate tiles (mask non-zero).", resonant_count
             )
@@ -555,7 +558,7 @@ class LunaPipeline:
         trace: dict = None,
     ) -> list[tuple[int, int, float]]:
         """Apply NMS on resonant voting or legacy KNN results.
-        
+
         For resonant voting: uses voting_mask values as quality scores.
         For legacy KNN: voting_mask is binary (0 or 1).
         """
@@ -678,7 +681,7 @@ class LunaPipeline:
             min_dist_px = self._config.min_dist_px
         if pithos_base_threshold is None:
             pithos_base_threshold = getattr(self._config, "pithos_base_threshold", 113)
-        
+
         if isinstance(product_ids, str):
             product_ids = [product_ids]
 
@@ -692,17 +695,17 @@ class LunaPipeline:
         scratch_dir = self._config.scratch_dir
 
         t_dino_start = time.perf_counter()
-        
+
         # Check if query_dir is a pits directory for Multi-Family Resonant Voting
         query_path = Path(query_dir)
         use_resonant_voting = False
-        
+
         if query_path.is_dir():
             pit_files = list(query_path.glob("*.npy"))
             if len(pit_files) > 10:
                 use_resonant_voting = True
                 log.info("Detected pit database with %d entries. Activating Multi-Family Resonant Voting.", len(pit_files))
-        
+
         if use_resonant_voting and self._query_queries is None:
             self._query_queries, self._query_families, self._query_thresholds = self._load_and_encode_pit_queries(query_dir, base_threshold=pithos_base_threshold)
             query_vecs = self._query_queries
@@ -711,7 +714,7 @@ class LunaPipeline:
                 query_vecs = self._query_queries
             else:
                 query_vecs = self._encode_queries(query_dir)
-        
+
         if trace is not None:
             trace["p1_pytorch_dino_inference"] = time.perf_counter() - t_dino_start
 
@@ -719,27 +722,27 @@ class LunaPipeline:
         import queue
         import threading
         from concurrent.futures import ThreadPoolExecutor
-        
+
         # Bounded queue to store completed downloads
         download_queue = queue.Queue(maxsize=4)
-        
+
         def download_task(pid):
             nac_path     = scratch_dir / f"{pid}.IMG"
             index_prefix = str(index_dir / f"pithos_{pid}")
             index_exists = Path(f"{index_prefix}.bin").exists()
-            
+
             # Always ensure the physical .IMG file exists if subsequent stages need it
             # Even if index exists, we need the raw file for coordinate extraction in refinement
             if not force_reingest and index_exists and nac_path.exists():
                 download_queue.put((pid, nac_path, None))
                 return
-            
+
             if not nac_path.exists():
                 try:
                     log.info("Background Downloader: Fetching %s from PDS …", pid)
                     max_bandwidth = getattr(self._config, 'max_bandwidth_mbps', None)
                     fetched_path = fetch_nac(
-                        pid, 
+                        pid,
                         dest_dir=scratch_dir,
                         max_bandwidth_mbps=max_bandwidth
                     )
@@ -749,7 +752,7 @@ class LunaPipeline:
                     download_queue.put((pid, nac_path, e))
             else:
                 download_queue.put((pid, nac_path, None))
-        
+
         def downloader_worker():
             # max_workers=3 limits concurrent downloads to 3 at a time.
             # Bounded queue blocks thread pool workers when it reaches maxsize=4.
@@ -760,7 +763,7 @@ class LunaPipeline:
                 log.warning("Downloader worker received interrupt signal. Shutting down gracefully...")
             except Exception as e:
                 log.error("Downloader worker crashed: %s", e)
-                    
+
         downloader_thread = threading.Thread(target=downloader_worker, daemon=True)
         downloader_thread.start()
 
@@ -784,23 +787,23 @@ class LunaPipeline:
                 t_ingest_start = time.perf_counter()
                 store, metadata = self._ingest(nac_path)
                 t_ingest_elapsed = time.perf_counter() - t_ingest_start
-                
+
                 if trace is not None:
                     trace[f"ingest_s_{pid}"] = t_ingest_elapsed
                     trace[f"ingest_tiles_{pid}"] = len(store._metadata)
                     trace[f"ingest_tiles_per_s_{pid}"] = len(store._metadata) / t_ingest_elapsed if t_ingest_elapsed > 0 else 0
-                
+
                 total_tiles += len(store._metadata)
-                
+
                 t_compile_start = time.perf_counter()
                 index_path = self._save_index(store, nac_path)
                 t_compile_elapsed = time.perf_counter() - t_compile_start
-                
+
                 if trace is not None:
                     trace[f"index_compile_s_{pid}"] = t_compile_elapsed
                     if index_path.exists():
                         trace[f"index_size_bytes_{pid}"] = index_path.stat().st_size
-                
+
                 del store
                 gc.collect()
             else:
@@ -808,7 +811,7 @@ class LunaPipeline:
                 meta_path = f"{index_prefix}_meta.pkl"
                 with open(meta_path, "rb") as f:
                     metadata = pickle.load(f)
-                
+
                 if trace is not None:
                     bin_path = f"{index_prefix}.bin"
                     if Path(bin_path).exists():
@@ -847,11 +850,11 @@ class LunaPipeline:
                         img = read_nac(nac_path, geometry=True)
                         lines, samples = img.pixels.shape
                         coord_fn = DataIngestor._build_coord_fn(nac_path, img.geometry, lines, samples)
-                    
+
                     x_center = meta.x_offset + meta.width / 2.0
                     y_center = meta.y_offset + meta.height / 2.0
                     lon, lat = coord_fn(x_center, y_center)
-                
+
                 all_hits.append(CandidateHit(
                     rank=rank, product_id=pid, votes=votes, score=score,
                     lon=lon, lat=lat,
@@ -871,28 +874,28 @@ class LunaPipeline:
         all_hits = apply_lunar_spatial_nms(all_hits, distance_threshold_meters=150.0)
 
         total_scan_elapsed = time.perf_counter() - total_scan_start
-        
+
         if trace is not None:
             trace["total_scan_s"] = total_scan_elapsed
             trace["n_queries"] = len(query_vecs)
             trace["n_candidates_raw"] = len(all_hits)
-            
+
             # Aggregate ingest metrics across all product IDs
             trace["ingest_s"] = sum(trace.get(f"ingest_s_{pid}", 0.0) for pid in product_ids)
             trace["ingest_tiles"] = sum(trace.get(f"ingest_tiles_{pid}", 0) for pid in product_ids)
             trace["index_compile_s"] = sum(trace.get(f"index_compile_s_{pid}", 0.0) for pid in product_ids)
             trace["index_size_bytes"] = sum(trace.get(f"index_size_bytes_{pid}", 0) for pid in product_ids)
-            
+
             # Calculate tiles per second
             total_ingest_time = trace["ingest_s"]
             trace["ingest_tiles_per_s"] = trace["ingest_tiles"] / total_ingest_time if total_ingest_time > 0 else 0.0
-        
+
         log.info("Scan complete: %d hits across %d NACs.", len(all_hits), len(product_ids))
-        
+
         if metrics:
             report = MetricsReport.from_trace(trace)
             return all_hits, report
-        
+
         return all_hits
 
 
@@ -994,21 +997,21 @@ class LunaPipeline:
             os.environ["LUNA_DISABLE_TQDM"] = "1"
 
         total_refine_start = time.perf_counter()
-        
+
         # Select refiner based on type
         if self._refiner_type == "dino":
             from luna.models.dino_refiner import DINORefiner
-            
+
             log.info("Initializing DINORefiner stage on %s …", self._device)
             if on_progress:
                 on_progress("Initializing DINORefiner", 0, 1)
-            
+
             refiner = DINORefiner(device=self._device)
-            
+
             if on_progress:
                 on_progress("Initializing DINORefiner", 1, 1)
                 on_progress("Running DINO refinement", 0, len(hits))
-            
+
             log.info("Passing %d candidates to DINO refiner (score_thr=%.2f) …", len(hits), score_thr)
             refined = refiner.refine(
                 hits=hits,
@@ -1021,24 +1024,24 @@ class LunaPipeline:
                 save_attention_overlay=self._config.save_attention_overlay if hasattr(self._config, 'save_attention_overlay') else False,
             )
         elif self._refiner_type == "stage2":
-            from luna.models.stage2_decoder import Stage2Refiner
             from luna.config import PROJECT_ROOT
-            
+            from luna.models.stage2_decoder import Stage2Refiner
+
             log.info("Initializing Stage2Refiner stage on %s …", self._device)
             if on_progress:
                 on_progress("Initializing Stage2Refiner", 0, 1)
-                
+
             checkpoint = checkpoint or (PROJECT_ROOT / "data" / "weights" / "stage2_decoder_best.pt")
             refiner = Stage2Refiner.from_checkpoint(
                 checkpoint_path=checkpoint,
                 dino_encoder=self._encoder,
                 device=self._device
             )
-            
+
             if on_progress:
                 on_progress("Initializing Stage2Refiner", 1, 1)
                 on_progress("Running Stage2 refinement", 0, len(hits))
-                
+
             log.info("Passing %d candidates to Stage2 refiner (score_thr=%.2f) …", len(hits), score_thr)
             refined = refiner.refine(
                 hits=hits,
@@ -1048,13 +1051,13 @@ class LunaPipeline:
                 trace=trace,
             )
         else:  # esa (default)
-            from luna.models import ESSARefiner
             from luna.config import WEIGHTS_DIR
+            from luna.models import ESSARefiner
 
             log.info("Initializing ESSARefiner stage on %s …", self._device)
             if on_progress:
                 on_progress("Initializing ESSARefiner", 0, 1)
-            
+
             checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
             refiner = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
 
@@ -1075,7 +1078,7 @@ class LunaPipeline:
 
         # Apply spatial NMS to remove duplicate confirmed detections in overlap areas
         refined = apply_lunar_spatial_nms(refined, distance_threshold_meters=150.0)
-        
+
         if on_progress:
             if self._refiner_type == "dino":
                 on_progress("Running DINO refinement", len(hits), len(hits))
@@ -1085,7 +1088,7 @@ class LunaPipeline:
                 on_progress("ESSA refinement complete", 1, 1)
 
         total_refine_elapsed = time.perf_counter() - total_refine_start
-        
+
         if trace is not None:
             trace["total_s"] = trace.get("total_scan_s", 0.0) + total_refine_elapsed
             refiner_key = "dino" if self._refiner_type == "dino" else "essa"
@@ -1093,9 +1096,9 @@ class LunaPipeline:
             trace[f"{refiner_key}_hits_in"] = len(hits)
             trace[f"{refiner_key}_hits_out"] = len(refined)
             trace[f"{refiner_key}_refinement_ratio"] = len(refined) / len(hits) if len(hits) > 0 else 0.0
-        
+
         if metrics:
             report = MetricsReport.from_trace(trace)
             return refined, report
-        
+
         return refined

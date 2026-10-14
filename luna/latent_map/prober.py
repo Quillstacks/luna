@@ -10,7 +10,7 @@ import logging
 import pickle
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any
 
 import numpy as np
 
@@ -28,7 +28,7 @@ def _init_worker() -> None:
     _db_instance = PithosMIDB()
 
 
-def _sample_index_worker(args: Tuple[str, int]) -> List[Dict[str, Any]]:
+def _sample_index_worker(args: tuple[str, int]) -> list[dict[str, Any]]:
     """
     Subprocess worker: reads a single index file set, samples max_per_index tiles,
     and returns metadata + raw float32 embeddings.
@@ -87,7 +87,7 @@ class LatentSpaceProber:
 
     def sample_background_tiles(
         self, target_sample_count: int = 10000, max_workers: int = 16
-    ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+    ) -> tuple[list[dict[str, Any]], np.ndarray]:
         """
         Sample background tiles uniformly from all index files in indices_dir.
 
@@ -106,7 +106,7 @@ class LatentSpaceProber:
         max_per_index = max(1, target_sample_count // num_indices + 1)
         tasks = [(str(p), max_per_index) for p in meta_files]
 
-        all_sampled_tiles: List[Dict[str, Any]] = []
+        all_sampled_tiles: list[dict[str, Any]] = []
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             for tile_batch in executor.map(_sample_index_worker, tasks):
@@ -123,7 +123,7 @@ class LatentSpaceProber:
             all_sampled_tiles = [all_sampled_tiles[i] for i in selected_indices]
 
         vectors = np.stack([t["vector"] for t in all_sampled_tiles]).astype(np.float32)
-        
+
         # Remove vector key from metadata dict to save memory
         metadata_list = []
         for t in all_sampled_tiles:

@@ -8,12 +8,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-from pathlib import Path
 
-
-from luna.latent_map.topology import PitTopologyAnalyzer
 from luna.latent_map.prober import LatentSpaceProber
+from luna.latent_map.topology import PitTopologyAnalyzer
 from luna.latent_map.visualizer import LatentMapVisualizer
 
 log = logging.getLogger(__name__)
@@ -55,7 +52,7 @@ def main() -> None:
     )
 
     print("\n=========================================================================")
-    print(f"Latent Space Dashboard generated successfully!")
+    print("Latent Space Dashboard generated successfully!")
     print(f"Dashboard HTML Path : {html_path}")
     print(f"Pit Anchors Mapped  : {len(anchor_info)}")
     print(f"Background Samples  : {len(bg_metadata)}")

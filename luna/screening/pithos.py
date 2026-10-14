@@ -24,11 +24,10 @@ import os
 import platform
 import sys
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 
-from luna.exceptions import IndexError, SearchError, DeltaError, DeltaFullError
+from luna.exceptions import DeltaError, IndexError, SearchError
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +39,7 @@ _THIRD_PARTY_PATHS = [Path(__file__).resolve().parents[2] / "third_party" / "pit
 def _find_lib(use_cuda: bool = False) -> Path | None:
     system = platform.system()
     candidates = []
-    
+
     for base in _THIRD_PARTY_PATHS:
         if system == "Linux":
             if use_cuda:
@@ -71,11 +70,11 @@ def _find_lib(use_cuda: bool = False) -> Path | None:
                 base / "libpithos-linux-x86_64.so",
                 base / "libpithos.so",
             ])
-    
+
     for p in candidates:
         if p.exists():
             return p
-    
+
     log.warning(
         "Pithos native shared library (libpithos) not found in system or third_party directory. "
         "Native Pithos FFI acceleration disabled; static utilities (e.g. binarize) remain active. "
@@ -181,9 +180,9 @@ class PithosMIDB:
     thread : POINTER(_GraalIsolateThread)
     """
 
-    _instance: "PithosMIDB | None" = None
+    _instance: PithosMIDB | None = None
 
-    def __new__(cls, lib_path: str | Path | None = None, use_cuda: bool = False) -> "PithosMIDB":
+    def __new__(cls, lib_path: str | Path | None = None, use_cuda: bool = False) -> PithosMIDB:
         if cls._instance is None:
             instance = super().__new__(cls)
             resolved = Path(lib_path) if lib_path is not None else _find_lib(use_cuda=use_cuda)
@@ -429,7 +428,7 @@ class PithosMIDB:
                 ctypes.c_int, ctypes.c_void_p,
             ]
             lib.vdb_cuda_query_planetary_grid.restype = ctypes.c_longlong
-            
+
             self._has_cuda_api = True
         except AttributeError:
             log.warning("CUDA API functions not found in libpithos.")
@@ -570,7 +569,7 @@ class PithosMIDB:
         index_name: str,
         queries: np.ndarray,
         k: int,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Parallel KNN search over the named index.
 
@@ -712,7 +711,7 @@ class PithosMIDB:
 
     def search_merged(
         self, index_name: str, queries: np.ndarray, k: int
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """KNN search over main index + delta buffer together."""
         self._check_native()
         n = queries.shape[0]
@@ -761,7 +760,7 @@ class PithosMIDB:
 
     def get_tier_address(
         self, index_name: str, tier: int
-    ) -> Tuple[int, int]:
+    ) -> tuple[int, int]:
         """Return byte offset and size of a Matryoshka tier."""
         offset = ctypes.c_longlong(0)
         size = ctypes.c_longlong(0)

@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from luna.config import DATA_DIR, WEIGHTS_DIR, TILE_SIZE, LROC_VALID_MIN, SCRATCH_DIR
+from luna.config import DATA_DIR, LROC_VALID_MIN, SCRATCH_DIR, TILE_SIZE
 from luna.io.pds_fetch import fetch_nac
 from luna.models.essa import RefinedHit
 
@@ -33,10 +33,10 @@ log = logging.getLogger(__name__)
 
 class DINORefiner:
     """Lightweight DINO-based classifier for candidate refinement.
-    
-    Uses cosine similarity between candidate tile DINO embeddings and 
+
+    Uses cosine similarity between candidate tile DINO embeddings and
     reference pit embeddings to filter false positives.
-    
+
     Parameters
     ----------
     reference_embeddings : np.ndarray | Path, shape (N, 384)
@@ -65,12 +65,12 @@ class DINORefiner:
             )
         self.device = device
         self.threshold = threshold
-        
+
         # Load reference embeddings
         self._using_placeholders = False
         if reference_embeddings is None:
             reference_embeddings = self.DEFAULT_REFERENCE
-        
+
         if isinstance(reference_embeddings, Path):
             if reference_embeddings.exists():
                 ref_emb = np.load(reference_embeddings).astype(np.float32)
@@ -88,11 +88,11 @@ class DINORefiner:
                 ref_emb = np.random.randn(50, 384).astype(np.float32)
         else:
             ref_emb = reference_embeddings.astype(np.float32)
-        
+
         # Normalize to unit length for cosine similarity
         norms = np.linalg.norm(ref_emb, axis=1, keepdims=True)
         self.reference = ref_emb / np.where(norms > 0, norms, 1.0)
-        
+
         # Adapt threshold based on number of reference embeddings
         # With few references, the cosine similarity distribution changes
         n_ref = len(self.reference)
@@ -132,8 +132,8 @@ class DINORefiner:
             )
         else:
             self._adaptive_threshold = self.threshold
-        
-        log.info("DINORefiner loaded with %d reference embeddings, threshold=%.2f", 
+
+        log.info("DINORefiner loaded with %d reference embeddings, threshold=%.2f",
                  n_ref, self._adaptive_threshold)
 
     def refine(
@@ -148,7 +148,7 @@ class DINORefiner:
         save_attention_overlay: bool = False,
     ) -> list[RefinedHit]:
         """Refine candidate hits using DINO similarity against reference embeddings.
-        
+
         Parameters
         ----------
         hits : list[CandidateHit]
@@ -165,19 +165,20 @@ class DINORefiner:
             Always True for DINORefiner (no preprocessing needed).
         trace : dict, optional
             Dictionary to collect timing metrics.
-            
+
         Returns
         -------
         list[RefinedHit]
             Filtered and scored refined hits with dino_similarity field.
         """
-        from luna.models.dinov3 import DINOEncoder
-        from luna.io.nac_reader import _label_byte_count
-        from luna.config import HF_REPO_ID
         import pvl
-        
+
+        from luna.config import HF_REPO_ID
+        from luna.io.nac_reader import _label_byte_count
+        from luna.models.dinov3 import DINOEncoder
+
         t_start = time.perf_counter()
-        
+
         # Load DINO encoder (same as Phase 1 for consistency)
         encoder = DINOEncoder(
             lora_dir=HF_REPO_ID,
@@ -185,25 +186,25 @@ class DINORefiner:
             matryoshka_dim=384,
             device=self.device,
         )
-        
+
         # Group hits by product_id to batch process
         hits_by_pid: dict[str, list] = defaultdict(list)
         for h in hits:
             hits_by_pid[h.product_id].append(h)
-        
+
         all_refined: list[RefinedHit] = []
-        
+
         # Prepare output directory for attention overlays
         if save_attention_overlay and out_dir is not None:
             out_dir = Path(out_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for pid, pid_hits in hits_by_pid.items():
             nac_path = SCRATCH_DIR / f"{pid}.IMG"
             if not nac_path.exists():
                 log.info("Fetching %s from PDS …", pid)
                 nac_path = fetch_nac(pid, dest_dir=SCRATCH_DIR)
-            
+
             with open(nac_path, "rb") as f:
                 label = pvl.load(f)
                 header_bytes = _label_byte_count(label)
@@ -212,41 +213,41 @@ class DINORefiner:
                 samples = int(img_block["LINE_SAMPLES"])
                 sample_bits = int(img_block["SAMPLE_BITS"])
                 sample_type = str(img_block["SAMPLE_TYPE"])
-            
+
             from luna.io.nac_reader import _numpy_dtype
             dtype = _numpy_dtype(sample_bits, sample_type)
             img = np.memmap(nac_path, dtype=dtype, mode='r', offset=header_bytes, shape=(lines, samples))
-            
+
             for hit in pid_hits:
                 x0 = hit.x_offset
                 y0 = hit.y_offset
-                
+
                 tile = img[y0:y0+TILE_SIZE, x0:x0+TILE_SIZE].copy()
-                
+
                 valid = tile[tile > LROC_VALID_MIN]
                 if len(valid) == 0:
                     lo, hi = 0.0, 1.0
                 else:
                     lo, hi = float(valid.min()), float(valid.max())
-                
+
                 if hi > lo:
                     norm_tile = (tile - lo) / (hi - lo)
                 else:
                     norm_tile = np.zeros_like(tile, dtype=np.float32)
-                
+
                 batch_3ch = np.stack([norm_tile] * 3, axis=0)
                 batch_3ch = np.expand_dims(batch_3ch, 0)
-                
+
                 batch_3ch_uint8 = (batch_3ch * 255).astype(np.uint8)
-                
+
                 embedding = encoder.encode(batch_3ch_uint8)
                 embedding = embedding.flatten()
-                
+
                 # Encoder already returns L2-normalized embeddings
                 # Compute cosine similarity: (N, 384) @ (384,) -> (N,)
                 similarities = np.dot(self.reference, embedding).flatten()
                 max_sim = float(np.max(similarities))
-                
+
                 # Use adaptive threshold based on reference count
                 effective_threshold = getattr(self, '_adaptive_threshold', self.threshold)
                 if max_sim >= effective_threshold and hit.score >= score_thr:
@@ -262,7 +263,7 @@ class DINORefiner:
                         dino_similarity=max_sim,
                     )
                     all_refined.append(refined)
-        
+
         if trace is not None:
             trace["p2_dino_refinement"] = time.perf_counter() - t_start
             trace["dino_s"] = trace.get("p2_dino_refinement", 0.0)
@@ -270,16 +271,16 @@ class DINORefiner:
             trace["dino_hits_out"] = len(all_refined)
             trace["dino_refinement_ratio"] = len(all_refined) / len(hits) if len(hits) > 0 else 0.0
             trace["dino_threshold_used"] = getattr(self, '_adaptive_threshold', self.threshold)
-        
+
         effective_threshold = getattr(self, '_adaptive_threshold', self.threshold)
-        log.info("DINORefiner: %d/%d candidates passed threshold (%.1f%%), used threshold=%.2f", 
-                 len(all_refined), len(hits), 
+        log.info("DINORefiner: %d/%d candidates passed threshold (%.1f%%), used threshold=%.2f",
+                 len(all_refined), len(hits),
                  100 * len(all_refined) / len(hits) if len(hits) > 0 else 0.0,
                  effective_threshold)
-        
+
         # Sort by confidence (dino_similarity) descending
         all_refined.sort(key=lambda x: x.dino_similarity, reverse=True)
-        
+
         # Re-assign ranks after sorting (create new objects since RefinedHit is frozen)
         all_refined = [
             RefinedHit(
@@ -306,12 +307,12 @@ class DINORefiner:
             refined_by_pid = defaultdict(list)
             for hit in all_refined:
                 refined_by_pid[hit.product_id].append(hit)
-                
+
             for pid, pid_hits in refined_by_pid.items():
                 nac_path = SCRATCH_DIR / f"{pid}.IMG"
                 if not nac_path.exists():
                     nac_path = fetch_nac(pid, dest_dir=SCRATCH_DIR)
-                
+
                 with open(nac_path, "rb") as f:
                     label = pvl.load(f)
                     header_bytes = _label_byte_count(label)
@@ -320,30 +321,32 @@ class DINORefiner:
                     samples = int(img_block["LINE_SAMPLES"])
                     sample_bits = int(img_block["SAMPLE_BITS"])
                     sample_type = str(img_block["SAMPLE_TYPE"])
-                
+
                 from luna.io.nac_reader import _numpy_dtype
                 dtype = _numpy_dtype(sample_bits, sample_type)
                 img = np.memmap(nac_path, dtype=dtype, mode='r', offset=header_bytes, shape=(lines, samples))
-                
+
                 for hit in pid_hits:
                     x0 = hit.x_offset
                     y0 = hit.y_offset
                     tile = img[y0:y0+TILE_SIZE, x0:x0+TILE_SIZE].copy()
-                    
+
                     valid = tile[tile > LROC_VALID_MIN]
                     lo, hi = (float(valid.min()), float(valid.max())) if len(valid) > 0 else (0.0, 1.0)
                     norm_tile = (tile - lo) / (hi - lo) if hi > lo else np.zeros_like(tile, dtype=np.float32)
-                    
+
                     batch_3ch = np.stack([norm_tile] * 3, axis=0)
                     batch_3ch = np.expand_dims(batch_3ch, 0)
                     batch_3ch_uint8 = (batch_3ch * 255).astype(np.uint8)
-                    
+
                     _, attention_map = encoder.encode(batch_3ch_uint8, return_attention=True)
-                    from luna.utils.attention_visualizer import save_attention_overlay as save_overlay
+                    from luna.utils.attention_visualizer import (
+                        save_attention_overlay as save_overlay,
+                    )
                     tile_uint8 = (norm_tile * 255).astype(np.uint8)
-                    
+
                     overlay_path = out_dir / f"rank_{hit.rank:03d}_{pid}_{hit.x_offset}_{hit.y_offset}_attention.png"
                     attention_map = np.squeeze(attention_map)
                     save_overlay(tile_uint8, attention_map, overlay_path)
-        
+
         return all_refined

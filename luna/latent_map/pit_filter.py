@@ -12,8 +12,6 @@ Implements a 3-Stage Filter Cascade to isolate genuine lunar collapse pits:
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Dict, List, Tuple, Any
 
 import cv2
 import numpy as np
@@ -36,7 +34,7 @@ class PitCandidateFilter:
         self.max_aspect_ratio = max_aspect_ratio
         self.max_sammon_strain = max_sammon_strain
 
-    def analyze_shadow_aspect_ratio(self, image_patch: np.ndarray) -> Tuple[float, float]:
+    def analyze_shadow_aspect_ratio(self, image_patch: np.ndarray) -> tuple[float, float]:
         """
         Analyzes shadow geometry in a 256x256 image patch using OpenCV contour analysis.
 
@@ -92,7 +90,7 @@ class PitCandidateFilter:
         tile_embedding: np.ndarray,
         pit_anchors_binary: np.ndarray,
         rille_anchors_binary: np.ndarray,
-    ) -> Tuple[int, int, int]:
+    ) -> tuple[int, int, int]:
         """
         Computes Contrastive Pit Score = d_rille - d_pit.
 
@@ -122,7 +120,7 @@ class PitCandidateFilter:
         aspect_ratio: float,
         d_pit: int,
         contrastive_score: int,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """
         Evaluates whether a candidate passes all 3 filter gates.
         """

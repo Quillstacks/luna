@@ -25,10 +25,12 @@ touching call sites.
 """
 
 from __future__ import annotations
-from typing import Protocol, runtime_checkable
-from dataclasses import dataclass
-import numpy as np
+
 import logging
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
+
+import numpy as np
 
 log = logging.getLogger(__name__)
 

@@ -19,9 +19,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import rasterio
 import torch
-import numpy as np
 
 from luna.config import DATA_DIR, WEIGHTS_DIR
 from luna.io import PDSIndex
@@ -137,9 +137,13 @@ class ESSARefiner:
     ) -> list[RefinedHit]:
         # Lazy imports — heavy, only needed at refine time
         from scripts.essa_smoke import (
-            preprocess_edr, lonlat_to_rowcol, rowcol_to_lonlat,
-            _read_tile, _infer_tile,
-            TILE_SIZE, TARGET_RES_M,
+            TARGET_RES_M,
+            TILE_SIZE,
+            _infer_tile,
+            _read_tile,
+            lonlat_to_rowcol,
+            preprocess_edr,
+            rowcol_to_lonlat,
         )
 
         out_dir    = Path(out_dir) if out_dir else DATA_DIR / "essa_out" / "pipeline_refine"
@@ -167,24 +171,24 @@ class ESSARefiner:
             else:
                 edr_url = edr_index.url_for(edr_pid)
                 isolated_edr = workdir / f"{edr_pid}.IMG"
-                
+
                 old_cdr = workdir / f"{cdr_pid}.IMG"
                 if old_cdr.exists():
                     log.info("Removing stale CDR from workdir...")
                     old_cdr.unlink()
-                
+
                 if not isolated_edr.exists():
                     log.info("Downloading raw EDR (%s) directly from PDS...", edr_pid)
                     import urllib.request
                     urllib.request.urlretrieve(edr_url, isolated_edr)
-                
+
                 downscaled = preprocess_edr(isolated_edr, workdir)
 
             t_geotiff_start = time.perf_counter()
             with rasterio.open(downscaled) as src:
                 H, W = src.height, src.width
                 log.info("GeoTIFF: %dx%d  CRS=%s", W, H, src.crs)
-                
+
                 t_geotiff_duration = time.perf_counter() - t_geotiff_start
                 if trace is not None:
                     trace["p2_geotiff_loading"] = trace.get("p2_geotiff_loading", 0.0) + t_geotiff_duration
@@ -294,10 +298,10 @@ def _save_debug_plot(
     out_dir: Path,
     rank: int,
     pid: str,
-    tile: "np.ndarray",
+    tile: np.ndarray,
     cls_name: str,
     score: float,
-    box: "np.ndarray | None",
+    box: np.ndarray | None,
 ) -> None:
     import matplotlib.patches as patches
     import matplotlib.pyplot as plt
@@ -306,23 +310,23 @@ def _save_debug_plot(
 
     if box is not None:
         x0, y0, x1, y1 = [int(b) for b in box]
-        
+
         padding = 150
-        
+
         h, w = tile.shape
         y_min = max(0, y0 - padding)
         y_max = min(h, y1 + padding)
         x_min = max(0, x0 - padding)
         x_max = min(w, x1 + padding)
-        
+
         zoomed_tile = tile[y_min:y_max, x_min:x_max]
         ax.imshow(zoomed_tile, cmap="gray", origin="upper")
-        
+
         new_x0 = x0 - x_min
         new_y0 = y0 - y_min
         new_x1 = x1 - x_min
         new_y1 = y1 - y_min
-        
+
         ax.add_patch(patches.Rectangle(
             (new_x0, new_y0), new_x1 - new_x0, new_y1 - new_y0,
             linewidth=2, edgecolor="red", facecolor="none",
@@ -334,7 +338,7 @@ def _save_debug_plot(
 
     ax.set_title(f"Rank {rank} | {pid} | ZOOM")
     ax.axis("off")
-    
+
     plt.savefig(out_dir / f"rank_{rank:02d}_{pid}_{cls_name}_zoomed.png",
                 bbox_inches="tight", dpi=300)
     plt.close(fig)

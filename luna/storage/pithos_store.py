@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from luna.screening.pithos import PithosMIDB, MOON_ID, MOON_RADIUS, MOON_TIERS
+from luna.screening.pithos import MOON_ID, MOON_RADIUS, MOON_TIERS, PithosMIDB
 from luna.screening.protocols import TileMetadata
 
 log = logging.getLogger(__name__)

@@ -5,21 +5,20 @@ import logging
 import pickle
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
 
 import numpy as np
 import torch
 
 from luna.config import (
-    DINO_DIM, FINAL_TOP_K, INDEX_DIR, LROC_VALID_MIN,
-    MAX_BATCH_SIZE, MIN_DIST_PX, SCRATCH_DIR, SEARCH_K,
-    STRIDE, TILE_SIZE, LunaConfig
+    LROC_VALID_MIN,
+    LunaConfig,
 )
-from luna.screening.pithos import PithosMIDB
-from luna.screening.protocols import TileMetadata
 from luna.models.essa import RefinedHit
 from luna.pipeline import CandidateHit, apply_lunar_spatial_nms
+from luna.screening.pithos import PithosMIDB
+from luna.screening.protocols import TileMetadata
 
 log = logging.getLogger(__name__)
 
@@ -35,21 +34,21 @@ class LunaClassifier(ABC):
 
     def _encode_queries(self, query_dir: str | Path) -> np.ndarray:
         query_path = Path(query_dir)
-        
+
         # 1. If query_dir points directly to a precompiled file
         if query_path.is_file():
             arr = np.load(query_path).astype(np.float32)
             if arr.ndim == 2 and arr.shape[1] == 384:
                 log.info("Loaded query database from file %s, shape %s.", query_path.name, arr.shape)
                 return arr
-                
+
         # 2. If query_dir is a directory, check for precompiled files first
         if query_path.is_dir():
             ref_file = query_path / "dino_reference.npy"
             if not ref_file.exists():
                 from luna.config import DATA_DIR
                 ref_file = DATA_DIR / "dino_reference.npy"
-                
+
             if ref_file.exists():
                 arr = np.load(ref_file).astype(np.float32)
                 if arr.ndim == 2 and arr.shape[1] == 384:
@@ -88,12 +87,12 @@ class LunaClassifier(ABC):
     def _load_and_encode_pit_queries(self, pits_dir: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         pits_path = Path(pits_dir)
         pit_files = sorted(pits_path.glob("*.npy"))
-        
+
         if not pit_files:
             raise FileNotFoundError(f"No pit .npy files found in {pits_dir}")
-        
+
         log.info("Loading %d pit patches from %s...", len(pit_files), pits_dir)
-        
+
         pit_images = []
         from PIL import Image
         for f in pit_files:
@@ -102,57 +101,57 @@ class LunaClassifier(ABC):
                 if img.shape != (256, 256):
                     img = np.array(Image.fromarray(img).resize((256, 256), Image.Resampling.BILINEAR))
                 pit_images.append(img)
-        
+
         if not pit_images:
             raise ValueError("No valid pit images found")
-        
+
         normalized = []
         for img in pit_images:
             valid = img[img > LROC_VALID_MIN]
             lo, hi = (valid.min(), valid.max()) if valid.size > 0 else (0.0, 1.0)
             norm = np.clip((img - lo) / (hi - lo + 1e-6), 0, 1)
             normalized.append(norm)
-        
+
         batch_size = self._config.max_batch_size if self._config else 64
         all_embeddings = []
-        
+
         for i in range(0, len(normalized), batch_size):
             batch_imgs = normalized[i:i + batch_size]
             batch_input = np.stack([(img * 255).astype(np.uint8) for img in batch_imgs])
             embeddings = self._encoder.encode(batch_input)
             all_embeddings.append(embeddings)
-        
+
         queries = np.concatenate(all_embeddings, axis=0).astype(np.float32)
         num_queries = len(queries)
-        
+
         import hashlib
         families = np.zeros(num_queries, dtype=np.int32)
         for i, f in enumerate(pit_files):
             h = int(hashlib.md5(f.stem.encode('utf-8')).hexdigest(), 16)
             family_id = h % 8
             families[i] = family_id
-        
+
         base_threshold = 42
         thresholds = np.full(num_queries, base_threshold, dtype=np.int32)
-        
+
         family_counts = np.bincount(families, minlength=8)
         for i in range(num_queries):
             family_id = families[i]
             count_factor = max(1, 10 - family_counts[family_id] // 4)
             thresholds[i] = min(63, max(16, base_threshold - count_factor))
-        
+
         if self._device == "mps":
             torch.mps.empty_cache()
         elif self._device == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
-        
+
         log.info(
             "Encoded %d pit queries: shape %s, families: %s, threshold range: [%d, %d]",
             num_queries, queries.shape, np.unique(families, return_counts=True),
             thresholds.min(), thresholds.max()
         )
-        
+
         return queries, families, thresholds
 
     def _search(
@@ -168,21 +167,21 @@ class LunaClassifier(ABC):
         index_bin = f"{index_prefix}.bin"
         index_name = Path(index_prefix).stem
         total_records = len(metadata)
-        
+
         log.info("Loading Pithos index %s …", index_bin)
-        
+
         db = PithosMIDB()
         db.load_index(index_name, index_bin)
-        
+
         if families is not None and thresholds is not None:
             log.info(
                 "Executing Multi-Family Resonant Voting for %d queries across %d families…",
                 len(query_vecs_f32), len(np.unique(families))
             )
             t_scan_start = time.perf_counter()
-            
+
             voting_mask = np.zeros(total_records, dtype=np.uint8)
-            
+
             resonant_count = db.query_planetary_grid(
                 index_name=index_name,
                 queries=query_vecs_f32,
@@ -190,13 +189,13 @@ class LunaClassifier(ABC):
                 thresholds=thresholds.astype(np.int32),
                 voting_mask=voting_mask,
             )
-            
+
             if trace is not None:
                 trace["p1_pithos_resonant_voting"] = time.perf_counter() - t_scan_start
-            
+
             db.drop_index(index_name)
             candidate_indices = np.where(voting_mask != 0)[0].tolist()
-            
+
             log.info("Resonant voting retrieved %d candidate tiles.", resonant_count)
             return candidate_indices, voting_mask
         else:
@@ -204,7 +203,7 @@ class LunaClassifier(ABC):
             t_scan_start = time.perf_counter()
             ids_mat, dists_mat = db.batch_search(index_name, query_vecs_f32, k)
             db.drop_index(index_name)
-            
+
             if trace is not None:
                 trace["p1_pithos_index_scan"] = time.perf_counter() - t_scan_start
 
@@ -300,16 +299,16 @@ class LunaClassifier(ABC):
         scratch_dir = self._config.scratch_dir
 
         t_dino_start = time.perf_counter()
-        
+
         query_path = Path(query_dir)
         use_resonant_voting = False
-        
+
         if query_path.is_dir():
             pit_files = list(query_path.glob("*.npy"))
             if len(pit_files) > 10:
                 use_resonant_voting = True
                 log.info("Detected pit database with %d entries. Activating Multi-Family Resonant Voting.", len(pit_files))
-        
+
         if use_resonant_voting and self._query_queries is None:
             self._query_queries, self._query_families, self._query_thresholds = self._load_and_encode_pit_queries(query_dir)
             query_vecs = self._query_queries
@@ -318,7 +317,7 @@ class LunaClassifier(ABC):
                 query_vecs = self._query_queries
             else:
                 query_vecs = self._encode_queries(query_dir)
-        
+
         if trace is not None:
             trace["p1_pytorch_dino_inference"] = time.perf_counter() - t_dino_start
 
@@ -327,7 +326,7 @@ class LunaClassifier(ABC):
         for pid in product_ids:
             index_prefix = str(index_dir / f"pithos_{pid}")
             meta_path = f"{index_prefix}_meta.pkl"
-            
+
             if not Path(meta_path).exists() or not Path(f"{index_prefix}.bin").exists():
                 raise FileNotFoundError(f"Database index files not found for {pid}. Please run ingest first.")
 
@@ -366,11 +365,11 @@ class LunaClassifier(ABC):
                         img = read_nac(nac_path, geometry=True)
                         lines, samples = img.pixels.shape
                         coord_fn = DataIngestor._build_coord_fn(nac_path, img.geometry, lines, samples)
-                    
+
                     x_center = meta.x_offset + meta.width / 2.0
                     y_center = meta.y_offset + meta.height / 2.0
                     lon, lat = coord_fn(x_center, y_center)
-                
+
                 all_candidate_hits.append(CandidateHit(
                     rank=rank, product_id=pid, votes=votes, score=score,
                     lon=lon, lat=lat,
@@ -433,13 +432,13 @@ class ESSAClassifier(LunaClassifier):
         trace: dict = None,
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> list[RefinedHit]:
-        from luna.models import ESSARefiner
         from luna.config import WEIGHTS_DIR
+        from luna.models import ESSARefiner
 
         log.info("Initializing ESSARefiner stage on %s …", self._device)
         if on_progress:
             on_progress("Initializing ESSARefiner", 0, 1)
-        
+
         checkpoint = checkpoint or (WEIGHTS_DIR / "essa.pt")
         refiner = ESSARefiner.from_checkpoint(checkpoint, device=self._device)
 
@@ -457,11 +456,11 @@ class ESSAClassifier(LunaClassifier):
             skip_preprocess=skip_preprocess,
             trace=trace,
         )
-        
+
         if on_progress:
             on_progress("Running ESSA refinement", len(hits), len(hits))
             on_progress("ESSA refinement complete", 1, 1)
-            
+
         return refined
 
 
@@ -478,17 +477,17 @@ class DINOClassifier(LunaClassifier):
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> list[RefinedHit]:
         from luna.models.dino_refiner import DINORefiner
-        
+
         log.info("Initializing DINORefiner stage on %s …", self._device)
         if on_progress:
             on_progress("Initializing DINORefiner", 0, 1)
-        
+
         refiner = DINORefiner(device=self._device)
-        
+
         if on_progress:
             on_progress("Initializing DINORefiner", 1, 1)
             on_progress("Running DINO refinement", 0, len(hits))
-        
+
         log.info("Passing %d candidates to DINO refiner (score_thr=%.2f) …", len(hits), score_thr)
         refined = refiner.refine(
             hits=hits,
@@ -500,11 +499,11 @@ class DINOClassifier(LunaClassifier):
             trace=trace,
             save_attention_overlay=self._config.save_attention_overlay if hasattr(self._config, 'save_attention_overlay') else False,
         )
-        
+
         if on_progress:
             on_progress("Running DINO refinement", len(hits), len(hits))
             on_progress("DINO refinement complete", 1, 1)
-            
+
         return refined
 
 
@@ -520,24 +519,24 @@ class Stage2Classifier(LunaClassifier):
         trace: dict = None,
         on_progress: Callable[[str, int, int], None] | None = None,
     ) -> list[RefinedHit]:
-        from luna.models.stage2_decoder import Stage2Refiner
         from luna.config import PROJECT_ROOT
-        
+        from luna.models.stage2_decoder import Stage2Refiner
+
         log.info("Initializing Stage2Refiner stage on %s …", self._device)
         if on_progress:
             on_progress("Initializing Stage2Refiner", 0, 1)
-            
+
         checkpoint = checkpoint or (PROJECT_ROOT / "data" / "weights" / "stage2_decoder_best.pt")
         refiner = Stage2Refiner.from_checkpoint(
             checkpoint_path=checkpoint,
             dino_encoder=self._encoder,
             device=self._device
         )
-        
+
         if on_progress:
             on_progress("Initializing Stage2Refiner", 1, 1)
             on_progress("Running Stage2 refinement", 0, len(hits))
-            
+
         log.info("Passing %d candidates to Stage2 refiner (score_thr=%.2f) …", len(hits), score_thr)
         refined = refiner.refine(
             hits=hits,
@@ -546,11 +545,11 @@ class Stage2Classifier(LunaClassifier):
             save_debug_plots=output_dir is not None,
             trace=trace,
         )
-        
+
         if on_progress:
             on_progress("Running Stage2 refinement", len(hits), len(hits))
             on_progress("Stage2 refinement complete", 1, 1)
-            
+
         return refined
 
 

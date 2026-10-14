@@ -1,5 +1,4 @@
-
-from setuptools import setup, Extension, find_packages
+from setuptools import Extension, setup
 
 ext_modules = []
 try:

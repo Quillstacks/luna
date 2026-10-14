@@ -14,12 +14,11 @@ Author: LUNA Advanced Agentic Coding Architecture Team
 from __future__ import annotations
 
 import logging
-from typing import Tuple, Dict, Any
 
 import numpy as np
-from scipy.spatial.distance import pdist, squareform
 from scipy.sparse import csr_matrix, diags
 from scipy.sparse.linalg import eigsh
+from scipy.spatial.distance import pdist, squareform
 from sklearn.neighbors import NearestNeighbors
 
 log = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ log = logging.getLogger(__name__)
 
 def compute_jl_distortion_ratio(
     high_dim_vecs: np.ndarray, low_dim_vecs: np.ndarray, sample_size: int = 1000
-) -> Tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float]:
     """
     Computes pairwise distance preservation ratio according to the Johnson-Lindenstrauss Lemma:
 
@@ -148,7 +147,7 @@ def compute_laplace_beltrami_eigenvectors(
 
 def compute_nash_sammon_strain(
     high_dim_vecs: np.ndarray, low_dim_vecs: np.ndarray, sample_size: int = 1000
-) -> Tuple[np.ndarray, float]:
+) -> tuple[np.ndarray, float]:
     r"""
     Calculates Sammon Mapping Stress / Nash Isometric Strain for each point:
 

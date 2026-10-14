@@ -7,7 +7,6 @@ from __future__ import annotations
 import csv
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -18,11 +17,11 @@ class LPAEntry:
     host_type: str
     latitude: float
     longitude: float
-    funnel_max_m: Optional[float]
-    funnel_min_m: Optional[float]
-    inner_max_m: Optional[float]
-    azimuth_deg: Optional[float]
-    depth_m: Optional[float]
+    funnel_max_m: float | None
+    funnel_min_m: float | None
+    inner_max_m: float | None
+    azimuth_deg: float | None
+    depth_m: float | None
     reference_nac: list[str]
 
 
@@ -53,7 +52,7 @@ def read_lpa_csv(path: str | Path) -> list[LPAEntry]:
     return out
 
 
-def _maybe_float(v: Optional[str]) -> Optional[float]:
+def _maybe_float(v: str | None) -> float | None:
     if v is None or v == "":
         return None
     try:

@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Any
 
 import numpy as np
 
 try:
     import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
 except ImportError:
     go = None  # type: ignore
 
@@ -71,9 +70,9 @@ class LatentMapVisualizer:
 
     def build_dashboard(
         self,
-        anchor_info: List[Dict[str, Any]],
+        anchor_info: list[dict[str, Any]],
         anchor_embeddings: np.ndarray,
-        background_metadata: List[Dict[str, Any]],
+        background_metadata: list[dict[str, Any]],
         background_embeddings: np.ndarray,
         out_html_path: str | Path = "data/_scratch/luna_latent_map.html",
     ) -> str:
@@ -142,9 +141,6 @@ class LatentMapVisualizer:
         )
 
         # Trace 2: Pit Anchors (Highlighted)
-        anchor_categories = [a["category"] for a in anchor_info]
-        anchor_names = [a["name"] for a in anchor_info]
-
         anchor_hover = [
             f"<b>{a['category']}</b><br>"
             f"Anchor Name: {a['name']}<br>"

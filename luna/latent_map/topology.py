@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -43,7 +43,7 @@ class PitTopologyAnalyzer:
 
     def load_and_encode_anchors(
         self, pits_dir: str | Path
-    ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+    ) -> tuple[list[dict[str, Any]], np.ndarray]:
         """
         Load all pit patch .npy files in pits_dir, normalize, and encode via DINOv3.
 
@@ -60,8 +60,8 @@ class PitTopologyAnalyzer:
 
         log.info("Loading and encoding %d pit anchors from %s...", len(pit_files), pits_dir)
 
-        anchor_info: List[Dict[str, Any]] = []
-        pit_images: List[np.ndarray] = []
+        anchor_info: list[dict[str, Any]] = []
+        pit_images: list[np.ndarray] = []
 
         for f in pit_files:
             img = np.load(f)
@@ -109,7 +109,7 @@ class PitTopologyAnalyzer:
 
     def compute_distance_matrices(
         self, embeddings: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Compute Cosine Distance matrix and Pithos PolarQuant Hamming Distance matrix.
 
@@ -127,10 +127,10 @@ class PitTopologyAnalyzer:
 
         # PolarQuant-Hadamard binarization for Pithos Hamming distance
         binary_vecs = PithosMIDB.binarize(embeddings)  # (N, 6) int64 packed
-        
+
         # Unpack bits for exact bitwise Hamming calculation
         bits = np.unpackbits(binary_vecs.view(np.uint8), axis=1)[:, :384]  # (N, 384)
-        
+
         # Pairwise Hamming distance = sum(bit_i != bit_j)
         # Using XOR over bits
         hamming_dists = np.zeros((n, n), dtype=np.int32)

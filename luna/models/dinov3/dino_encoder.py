@@ -5,8 +5,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torchvision import transforms
 from huggingface_hub import hf_hub_download
+from torchvision import transforms
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class DINOEncoder:
             for fname in filenames_to_try:
                 try:
                     resolved_base_path = hf_hub_download(
-                        repo_id=resolved_base_path, 
+                        repo_id=resolved_base_path,
                         filename=fname
                     )
                     success = True
@@ -153,7 +153,7 @@ class DINOEncoder:
             except Exception as e:
                 log.warning(f"Failed to compile model: {e}")
         elif self.device.type == "mps":
-            log.info(f"Keeping DINOv3 in FP32 precision on MPS (FP16 causes dtype mismatch with Stage-2 decoder)")
+            log.info("Keeping DINOv3 in FP32 precision on MPS (FP16 causes dtype mismatch with Stage-2 decoder)")
 
         # Keep a direct reference to the raw backbone for inference.
         try:
@@ -180,7 +180,7 @@ class DINOEncoder:
             raise
 
         lora_path_str = str(lora_dir)
-        
+
         # Dynamic check in standard user Hugging Face cache if lora_path_str is a HF repo slug
         if not os.path.isdir(lora_path_str) and "/" in lora_path_str:
             _repo_slug = lora_path_str.replace("/", "--")
@@ -191,12 +191,12 @@ class DINOEncoder:
                     if snap.is_dir():
                         lora_path_str = str(snap)
                         break
-        
+
         if os.path.isdir(lora_path_str) and os.path.exists(os.path.join(lora_path_str, "weights")):
             lora_path_str = os.path.join(lora_path_str, "weights")
 
         log.info(f"Loading LoRA adapters from {lora_path_str}...")
-        
+
         try:
             model = PeftModel.from_pretrained(self.backbone, lora_path_str)
             log.info("Merging LoRA weights into base model to enable full torch.compile graph fusion...")
@@ -214,13 +214,13 @@ class DINOEncoder:
     ) -> torch.Tensor:
         """
         Dual-scale pooling combining Global Average Pooling (GAP) and Top-Salient token mean.
-        
+
         Args:
             patch_tokens: Tensor of shape (B, N_patches, D), from forward_features
             top_ratio: Fraction of tokens with highest L2 norm to average (default 0.10)
             use_proj_head: If True and proj_head is present, projects gap and salient through proj_head
             dim: Output dimension for each branch when using proj_head (default self.matryoshka_dim)
-            
+
         Returns:
             L2-normalized fused tensor of shape (B, 2 * out_dim).
         """
@@ -261,14 +261,14 @@ class DINOEncoder:
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """
         Encode a batch of grayscale or RGB images into L2-normalized embeddings.
-        
+
         Args:
             batch: Input images as numpy array or tensor, shape (B, H, W) or (B, C, H, W)
             return_attention: If True, also return attention rollout map
             pooling: Pooling mode ("dual_scale", "gap", "mtp", "cls")
             top_ratio: Top salient token fraction if pooling="dual_scale"
             use_proj_head: Whether to apply Matryoshka projection head
-            
+
         Returns:
             If return_attention is False: embeddings array of shape (B, out_dim)
             If return_attention is True: tuple of (embeddings, attention_map)
@@ -289,7 +289,7 @@ class DINOEncoder:
                 tensor = torch.from_numpy(batch).to(device=self.device, dtype=tensor_dtype, non_blocking=True)
             else:
                 raise ValueError(f"Expected batch shape (B, H, W) or (B, C, H, W), got {batch.shape}")
-        
+
         if getattr(batch, "dtype", None) == np.uint8 or getattr(batch, "dtype", None) == torch.uint8:
             tensor = tensor / 255.0
 
@@ -297,10 +297,10 @@ class DINOEncoder:
             tensor = tensor.expand(-1, 3, -1, -1)
 
         tensor = (tensor - self._norm_mean) / self._norm_std
-        
+
         if return_attention:
             return self._encode_with_attention(tensor)
-        
+
         features_dict = self._backbone_module.forward_features(tensor)
         patch_tokens = features_dict["x_norm_patchtokens"]
 
@@ -336,22 +336,22 @@ class DINOEncoder:
             return F.normalize(features.float(), p=2, dim=-1).cpu().numpy()
         else:
             raise ValueError(f"Unknown pooling method: {pooling}")
-    
+
     @torch.inference_mode()
     def _encode_with_attention(self, tensor: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
         """Encode with actual attention map extraction from the last self-attention layer."""
+
         import torch.nn.functional as F
-        import math
-        
+
         # Capture self-attention from the last transformer block
         captured_attn = []
         last_block = None
         orig_compute_attention = None
-        
+
         try:
             last_block = self._backbone_module.blocks[-1]
             orig_compute_attention = last_block.attn.compute_attention
-            
+
             def hook_compute_attention(qkv, attn_bias=None, rope=None):
                 B, N, _ = qkv.shape
                 C = last_block.attn.qkv.in_features
@@ -366,49 +366,49 @@ class DINOEncoder:
                 x = attn @ v
                 x = x.transpose(1, 2)
                 return x.reshape([B, N, C])
-                
+
             last_block.attn.compute_attention = hook_compute_attention
         except Exception as e:
             log.warning(f"Could not setup attention hook: {e}")
-            
+
         # Forward pass
         features_dict = self._backbone_module.forward_features(tensor)
         features = features_dict["x_norm_clstoken"]
-        
+
         if self.matryoshka_dim < features.shape[1]:
             features = features[:, : self.matryoshka_dim]
-            
+
         embeddings = F.normalize(features, p=2, dim=-1).cpu().float().numpy()
-        
+
         # Restore original compute_attention method
         if last_block is not None and orig_compute_attention is not None:
             last_block.attn.compute_attention = orig_compute_attention
-            
+
         # Process captured attention map
         if captured_attn:
             attn_matrix = captured_attn[0] # Shape: (B, N_tokens, N_tokens)
-            
+
             # The CLS token attention to other tokens is at index 0
             cls_attn = attn_matrix[:, 0, :] # Shape: (B, N_tokens)
-            
+
             # Get image spatial dimensions
             img_h, img_w = tensor.shape[-2], tensor.shape[-1]
             patch_size = 16 # DINOv3 VitS16 patch size
             n_spatial_h = img_h // patch_size
             n_spatial_w = img_w // patch_size
             n_spatial_total = n_spatial_h * n_spatial_w
-            
+
             # The spatial patch tokens are the last n_spatial_total tokens in the sequence
             cls_attn_spatial = cls_attn[:, -n_spatial_total:] # Shape: (B, n_spatial_total)
-            
+
             # Reshape to 2D spatial grid
             attention_spatial = cls_attn_spatial.reshape(tensor.shape[0], n_spatial_h, n_spatial_w)
-            
+
             # Normalize attention map to [0, 1] for visualization
             attn_min = attention_spatial.min(dim=-1, keepdim=True)[0].min(dim=-2, keepdim=True)[0]
             attn_max = attention_spatial.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
             attention_spatial = (attention_spatial - attn_min) / (attn_max - attn_min + 1e-8)
-            
+
             # Resize/interpolate to match input image dimensions
             attention_resized = F.interpolate(
                 attention_spatial.unsqueeze(1), # (B, 1, n_spatial_h, n_spatial_w)
@@ -416,7 +416,7 @@ class DINOEncoder:
                 mode='bilinear',
                 align_corners=False
             ).squeeze(1) # (B, H, W)
-            
+
             attention_map = attention_resized.cpu().float().numpy()
         else:
             # Fallback: create a center-focused attention map
@@ -428,5 +428,5 @@ class DINOEncoder:
             attention_map = np.exp(-r2 / (2 * sigma**2)).astype(np.float32)
             attention_map = attention_map[np.newaxis, ...]
             attention_map = np.tile(attention_map, (tensor.shape[0], 1, 1))
-            
+
         return embeddings, attention_map

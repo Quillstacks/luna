@@ -5,11 +5,11 @@ hardcoding values at call sites.
 """
 
 from __future__ import annotations
-import os
+
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -113,14 +113,14 @@ class LunaConfig:
     scratch_dir: Path = field(default_factory=lambda: SCRATCH_DIR)
     pithos_tiers: np.ndarray = field(default_factory=lambda: np.array([64, 128, 256, 384], dtype=np.int32))
     energy_budget: float = 0.85
-    
+
     # Output options
     save_attention_overlay: bool = False
-    
+
     # Pithos options
     pithos_use_fp16: bool = False
     pithos_use_cuda: bool = False
     pithos_base_threshold: int = 113
-    
+
     # Bandwidth limiting for downloads (in MB/s, None = unlimited)
-    max_bandwidth_mbps: Optional[float] = None
+    max_bandwidth_mbps: float | None = None

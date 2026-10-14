@@ -14,7 +14,6 @@ so the major axis tilts correctly under that convention (north = -y).
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import numpy as np
 
@@ -69,8 +68,8 @@ def pit_mask_from_lpa(
     center_px: tuple[float, float],
     funnel_max_m: float,
     resolution_m: float,
-    funnel_min_m: Optional[float] = None,
-    azimuth_deg: Optional[float] = None,
+    funnel_min_m: float | None = None,
+    azimuth_deg: float | None = None,
 ) -> np.ndarray:
     """Wrapper: catalog metric dimensions -> pixel-space ellipse mask."""
     semi_major_px = 0.5 * funnel_max_m / resolution_m

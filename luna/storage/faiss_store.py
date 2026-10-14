@@ -1,10 +1,10 @@
 import logging
-import pickle
 import os
+import pickle
 
 import numpy as np
 
-from luna.screening.protocols import VectorStore, TileMetadata
+from luna.screening.protocols import TileMetadata, VectorStore
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 

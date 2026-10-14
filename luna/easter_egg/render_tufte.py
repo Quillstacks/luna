@@ -8,13 +8,14 @@ Can be run directly via:
     $ python -m luna.easter_egg.render_tufte
 """
 
-import sys
-import json
 import argparse
+import json
 from pathlib import Path
+
+import matplotlib
 import numpy as np
 import pandas as pd
-import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -35,7 +36,7 @@ def locate_raw_data():
 def generate_plot(metrics_path: str | Path | None = None, out_svg: str | Path = "results/stage2_physics_precision.svg", verbose: bool = True) -> Path:
     out_svg = Path(out_svg)
     out_svg.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Load or generate metrics
     if metrics_path is None or not Path(metrics_path).exists():
         # Check standard paths
@@ -54,10 +55,10 @@ def generate_plot(metrics_path: str | Path | None = None, out_svg: str | Path = 
             from .verify_physics import run_evaluation
             metrics = run_evaluation(out_dir=out_svg.parent, verbose=False)
         else:
-            with open(chosen, "r") as f:
+            with open(chosen) as f:
                 metrics = json.load(f)
     else:
-        with open(metrics_path, "r") as f:
+        with open(metrics_path) as f:
             metrics = json.load(f)
 
     pk_data = metrics["precision_at_k"]
@@ -145,7 +146,7 @@ def generate_plot(metrics_path: str | Path | None = None, out_svg: str | Path = 
 
     if verbose:
         print(f"[OK] Tufte scientific SVG saved to: {out_svg}")
-        
+
     return out_svg
 
 def main():
