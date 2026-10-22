@@ -112,3 +112,29 @@ def test_data_file_falls_back_to_cwd_catalogs(
         idx = PDSIndex()
         assert idx.volumes()[0].volume_id == "LROLRC_1001"
     assert idx.cache_path == tmp_path / "catalogs" / "pds_volume_index_cdr.json"
+
+
+def test_pid_sort_key_is_numeric():
+    from luna.io.pds_index import _pid_sort_key
+
+    assert "M101013765CC" <= "M1103873683RC" <= "M116943122RC"  # the ASCII trap
+    assert _pid_sort_key("M1103873683RC") > _pid_sort_key("M116943122RC")
+    assert _pid_sort_key("M999999999RC") < _pid_sort_key("M1000000000RC")
+
+
+def test_ten_digit_pid_does_not_match_nine_digit_volume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: Path
+):
+    vol = dict(VOLUME, first_pid="M101013765CC", last_pid="M116943122RC")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "pds_volume_index_cdr.json").write_text(json.dumps([vol]))
+    monkeypatch.chdir(tmp_path)
+    idx = PDSIndex()
+    with patch.object(PDSIndex, "_binary_search") as search:
+        with pytest.raises(KeyError):
+            idx._lookup("M1103873683RC")
+        search.assert_not_called()
+        search.return_value = None
+        with pytest.raises(KeyError):
+            idx._lookup("M110000000RC")  # 9-digit, in range -> searched
+        search.assert_called_once()

@@ -67,6 +67,21 @@ GEOMETRY_SLICES = {
 # never relative to this file (that would point into site-packages when installed).
 
 
+_PID_MET_RE = re.compile(r"M(\d+)(.*)$")
+
+
+def _pid_sort_key(pid: str) -> tuple[int, str]:
+    """Numeric sort key ``(MET, suffix)`` for ``M<digits>[L|R][E|C]`` product IDs.
+
+    Plain string comparison mis-orders 9- and 10-digit MET values
+    (``"M1103873683RC" < "M116943122RC"``). Unparseable IDs sort first.
+    """
+    m = _PID_MET_RE.match(pid)
+    if m is None:
+        return (-1, pid)
+    return (int(m.group(1)), m.group(2))
+
+
 def _is_valid_pid(pid: str) -> bool:
     return PID_PATTERN.match(pid) is not None
 
@@ -429,7 +444,7 @@ class PDSIndex:
 
             if pid == target:
                 return pid, fsn, rec
-            if pid < target:
+            if _pid_sort_key(pid) < _pid_sort_key(target):
                 lo = mid + 1
             else:
                 hi = mid - 1
@@ -491,7 +506,7 @@ class PDSIndex:
             pid,
         )
         for v in self.volumes():
-            if v.first_pid <= pid <= v.last_pid:
+            if _pid_sort_key(v.first_pid) <= _pid_sort_key(pid) <= _pid_sort_key(v.last_pid):
                 hit = self._binary_search(v, pid)
                 if hit is not None:
                     _, fsn, rec = hit
