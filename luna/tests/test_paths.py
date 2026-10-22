@@ -84,7 +84,7 @@ def test_missing_volume_index_raises_without_scraping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: Path
 ):
     monkeypatch.chdir(tmp_path)
-    idx = PDSIndex()
+    idx = PDSIndex(archive="EDR")  # no EDR index is bundled (CDR is)
     with patch.object(PDSIndex, "_characterize_volume") as char, patch.object(
         PDSIndex, "_list_volumes"
     ) as lister:
@@ -100,3 +100,15 @@ def test_writable_path_never_in_package(
     monkeypatch.chdir(tmp_path)
     w = paths.writable_path("pds_geometry_cache.json", "data")
     assert w == clean_env / ".cache" / "luna" / "pds_geometry_cache.json"
+
+
+def test_data_file_falls_back_to_cwd_catalogs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: Path
+):
+    (tmp_path / "catalogs").mkdir()
+    (tmp_path / "catalogs" / "pds_volume_index_cdr.json").write_text(json.dumps([VOLUME]))
+    monkeypatch.chdir(tmp_path)
+    with patch("requests.Session.request", side_effect=AssertionError("network used")):
+        idx = PDSIndex()
+        assert idx.volumes()[0].volume_id == "LROLRC_1001"
+    assert idx.cache_path == tmp_path / "catalogs" / "pds_volume_index_cdr.json"

@@ -148,6 +148,8 @@ class ESSARefiner:
 
         out_dir    = Path(out_dir) if out_dir else DATA_DIR / "essa_out" / "pipeline_refine"
         edr_index  = PDSIndex(archive="EDR")
+        if not edr_index.cache_path.exists():
+            edr_index = PDSIndex(archive="EDR", allow_remote_characterization=True)
         candidates = []
 
         hits_by_nac: dict[str, list] = defaultdict(list)

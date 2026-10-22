@@ -54,12 +54,18 @@ def candidate_paths(name: str, kind: str = DATA) -> list[Path]:
     """All locations searched for ``name``, in priority order."""
     if kind not in _ENV:
         raise ValueError(f"kind must be 'data' or 'catalogs', got {kind!r}")
-    return [
+    paths = [
         *(d / name for d in _env_dirs(kind)),
         Path.cwd() / kind / name,
-        BUNDLED_DIR / kind / name,
-        user_cache_dir() / name,
     ]
+    if kind == DATA:
+        # Some projects keep index files (e.g. pds_volume_index_cdr.json) in catalogs/.
+        paths.append(Path.cwd() / CATALOGS / name)
+    paths.append(BUNDLED_DIR / kind / name)
+    if kind == DATA:
+        paths.append(BUNDLED_DIR / CATALOGS / name)
+    paths.append(user_cache_dir() / name)
+    return paths
 
 
 def find_file(name: str, kind: str = DATA) -> Path | None:
