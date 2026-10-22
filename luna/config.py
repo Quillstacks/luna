@@ -19,13 +19,27 @@ log = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR     = PROJECT_ROOT / "data"
+# NOTE: never derive data locations from the package location; when installed
+# into site-packages, ``parent.parent`` is ``site-packages``. See luna.paths.
+PROJECT_ROOT = Path.cwd()
+DATA_DIR     = (
+    Path(os.environ["LUNA_DATA_DIR"]).expanduser()
+    if os.environ.get("LUNA_DATA_DIR")
+    else Path.cwd() / "data"
+)
 SCRATCH_DIR  = DATA_DIR / "_scratch"
 SPICE_DIR    = DATA_DIR / "spice" / "lro"
 STATS_FILE   = DATA_DIR / "nac_stats.json"
 INDEX_DIR    = SCRATCH_DIR / "indices"
 WEIGHTS_DIR  = DATA_DIR / "weights"
+
+from luna.paths import (  # noqa: E402,F401  (re-exported resolver API)
+    BUNDLED_DIR,
+    candidate_paths,
+    find_file,
+    user_cache_dir,
+    writable_path,
+)
 
 # ---------------------------------------------------------------------------
 # Model

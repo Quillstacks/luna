@@ -1,5 +1,6 @@
 recursive-include luna *.pyx *.pxd
 recursive-include luna *.cpp
+recursive-include luna/resources *
 include setup.py
 include pyproject.toml
 include README.md

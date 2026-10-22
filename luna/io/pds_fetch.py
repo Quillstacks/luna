@@ -72,8 +72,14 @@ def get_pds_session(user_agent: str | None = None) -> requests.Session:
     return _session
 
 
-def _shared_index() -> PDSIndex:
+def _shared_index(
+    cache_dir: str | os.PathLike | None = None,
+    index_path: str | os.PathLike | None = None,
+) -> PDSIndex:
+    """Return the shared :class:`PDSIndex`, or a dedicated one for explicit paths."""
     global _index
+    if cache_dir is not None or index_path is not None:
+        return PDSIndex(cache_path=index_path, cache_dir=cache_dir)
     if _index is None:
         _index = PDSIndex()
     return _index
@@ -141,6 +147,8 @@ def fetch_nac(
     max_bandwidth_mbps: float | None = None,
     session: requests.Session | None = None,
     user_agent: str | None = None,
+    cache_dir: str | os.PathLike | None = None,
+    index_path: str | os.PathLike | None = None,
 ) -> Path:
     """Download a NAC CDR ``.IMG`` into ``dest_dir``. Returns the local path.
 
@@ -174,6 +182,9 @@ def fetch_nac(
             saturation. Example: 10 = 10 MB/s = 80 Mbps.
         session: Optional pre-configured requests.Session (defaults to get_pds_session()).
         user_agent: Optional custom User-Agent string.
+        cache_dir: Optional directory holding the PDS index caches (volume index,
+            URL cache, geometry cache). Searched before the default locations.
+        index_path: Optional explicit path to the volume index JSON.
 
     Returns:
         Path to the downloaded .IMG file.
@@ -190,7 +201,21 @@ def fetch_nac(
     if out.exists() and not force:
         return out
 
-    resolved = url or _shared_index().url_for(product_id)
+    if url:
+        resolved = url
+    else:
+        index = _shared_index(cache_dir=cache_dir, index_path=index_path)
+        pid_n = _normalize_product_id(product_id, index.suffix)
+        if pid_n not in index._url_cache and not (
+            pid_n in index._geom_cache and "file_spec_name" in index._geom_cache[pid_n]
+        ):
+            log.warning(
+                "%s not in local URL/geometry caches; resolving via remote INDEX.TAB "
+                "binary search (volume index: %s)",
+                pid_n,
+                index.cache_path,
+            )
+        resolved = index.url_for(product_id)
     http_session = session or get_pds_session(user_agent)
 
     # Initialize bandwidth limiter if limit is specified

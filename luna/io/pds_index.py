@@ -17,7 +17,6 @@ import csv
 import io
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from luna.exceptions import IndexError
+from luna.paths import candidate_paths, find_file, writable_path
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,8 @@ GEOMETRY_SLICES = {
     "spacecraft_altitude": slice(875, 882),
 }
 
-CACHE_PATH = Path(__file__).resolve().parents[2] / "data" / "pds_volume_index.json"
+# NOTE: data locations are resolved by luna.paths (env > cwd > bundled > ~/.cache/luna),
+# never relative to this file (that would point into site-packages when installed).
 
 
 def _is_valid_pid(pid: str) -> bool:
@@ -134,16 +135,25 @@ class PDSIndex:
         cache_path: Path | str | None = None,
         session: requests.Session | None = None,
         archive: str = "CDR",
+        allow_remote_characterization: bool = False,
+        cache_dir: Path | str | None = None,
     ) -> None:
         """Initialize a PDSIndex resolver.
 
         Args:
             base_url: Optional custom PDS archive root URL. If None, uses default
                 CDR/EDR endpoints.
-            cache_path: Optional path for storing volume boundary metadata.
+            cache_path: Optional explicit path of the volume boundary index JSON.
             session: Optional custom ``requests.Session`` with customized adapters.
             archive: Archive type to query (``"CDR"`` or ``"EDR"``, case-insensitive).
+            allow_remote_characterization: If False (default), a missing volume
+                index raises ``RuntimeError`` instead of silently scraping every
+                volume from PDS. Set True or call :meth:`build_volume_index`.
+            cache_dir: Optional directory searched first (and written to) for
+                the volume index, URL cache and geometry cache.
         """
+        self.allow_remote_characterization = allow_remote_characterization
+        self.cache_dir = Path(cache_dir).expanduser() if cache_dir is not None else None
         if session is not None:
             self.session = session
         else:
@@ -175,9 +185,7 @@ class PDSIndex:
         self.suffix = {"CDR": "C", "EDR": "E"}.get(self.archive, "C")
 
         # Load local geometry cache if it exists
-        self.geom_cache_path = (
-            Path(__file__).resolve().parents[2] / "data" / "pds_geometry_cache.json"
-        )
+        self.geom_cache_path = self._locate("pds_geometry_cache.json")
         self._geom_cache: dict[str, dict[str, Any]] = {}
         if self.geom_cache_path.exists():
             try:
@@ -190,38 +198,21 @@ class PDSIndex:
         else:
             self.base_url = base_url.rstrip("/")
 
+        volume_index_name = f"pds_volume_index_{self.archive.lower()}.json"
+        self.searched_paths: list[Path] = []
+        if self.cache_dir is not None:
+            self.searched_paths.append(self.cache_dir / volume_index_name)
+        self.searched_paths.extend(candidate_paths(volume_index_name, "data"))
         if cache_path is None:
-            env_cache_dir = os.environ.get("LUNA_PDS_CACHE_DIR")
-            candidates = []
-            if env_cache_dir:
-                candidates.append(
-                    Path(env_cache_dir) / f"pds_volume_index_{self.archive.lower()}.json"
-                )
-            candidates.extend(
-                [
-                    Path(__file__).resolve().parents[4]
-                    / "data"
-                    / "pds"
-                    / f"pds_volume_index_{self.archive.lower()}.json",
-                    CACHE_PATH.with_name(f"pds_volume_index_{self.archive.lower()}.json"),
-                ]
-            )
-            for candidate in candidates:
-                if candidate.exists():
-                    cache_path = candidate
-                    break
-            if cache_path is None:
-                cache_path = CACHE_PATH.with_name(
-                    f"pds_volume_index_{self.archive.lower()}.json"
-                )
+            cache_path = self._locate(volume_index_name)
+        else:
+            self.searched_paths.insert(0, Path(cache_path))
 
         self.cache_path = Path(cache_path)
         self._volumes: list[VolumeInfo] | None = None
 
         # Optional local Parquet URL index cache
-        self.url_cache_parquet = (
-            Path(__file__).resolve().parents[2] / "data" / "pds_cdr_url_cache.parquet"
-        )
+        self.url_cache_parquet = self._locate("pds_cdr_url_cache.parquet")
         self._url_cache: dict[str, str] = {}
         if self.url_cache_parquet.exists():
             try:
@@ -241,6 +232,16 @@ class PDSIndex:
                 )
             except Exception as e:
                 log.warning("Failed to load Parquet URL cache: %s", e)
+
+    def _locate(self, name: str) -> Path:
+        """Find ``name`` (existing) or return the path where it should be written."""
+        if self.cache_dir is not None:
+            p = self.cache_dir / name
+            if p.exists():
+                return p
+            found = find_file(name, "data")
+            return found if found is not None else p
+        return find_file(name, "data") or writable_path(name, "data")
 
     def _format_url_from_fsn(self, fsn: str) -> str:
         """Convert a PDS FILE_SPECIFICATION_NAME into a direct download URL."""
@@ -371,6 +372,12 @@ class PDSIndex:
         )
 
     def volumes(self, force: bool = False) -> list[VolumeInfo]:
+        """Return the volume boundary index.
+
+        Loads the local JSON index. If it is missing, raises ``RuntimeError``
+        unless ``allow_remote_characterization`` is True (or ``force=True`` /
+        :meth:`build_volume_index` is called explicitly).
+        """
         if self._volumes is not None and not force:
             return self._volumes
 
@@ -379,6 +386,19 @@ class PDSIndex:
             self._volumes = [VolumeInfo(**v) for v in raw]
             return self._volumes
 
+        if not force and not self.allow_remote_characterization:
+            searched = "\n  ".join(str(p) for p in self.searched_paths)
+            raise RuntimeError(
+                f"PDS volume index for {self.archive} not found. Searched:\n  {searched}\n"
+                "Refusing to scrape all PDS volumes automatically (risks HTTP 429). "
+                "Provide the file via LUNA_DATA_DIR / ./data / cache_dir / cache_path, "
+                "call PDSIndex.build_volume_index() explicitly, or construct "
+                "PDSIndex(allow_remote_characterization=True)."
+            )
+        return self.build_volume_index()
+
+    def build_volume_index(self) -> list[VolumeInfo]:
+        """Explicitly characterize every PDS volume remotely and cache the result."""
         vols = self._list_volumes()
         log.info("Characterizing %d CDR volumes from PDS...", len(vols))
         out: list[VolumeInfo] = []
@@ -465,6 +485,11 @@ class PDSIndex:
     def _lookup(self, product_id: str) -> tuple[VolumeInfo, str, str, str]:
         pid = _normalize_product_id(product_id, self.suffix)
 
+        log.warning(
+            "No local URL/geometry cache entry for %s; performing remote INDEX.TAB "
+            "binary search against PDS.",
+            pid,
+        )
         for v in self.volumes():
             if v.first_pid <= pid <= v.last_pid:
                 hit = self._binary_search(v, pid)
@@ -534,14 +559,13 @@ class PDSIndex:
         features: list[dict[str, Any]], archive: str = "CDR"
     ) -> None:
         """Persist footprint geometry from QuickMap GeoJSON features into the local cache."""
-        geom_cache_path = (
-            Path(__file__).resolve().parents[2] / "data" / "pds_geometry_cache.json"
-        )
+        geom_cache_path = writable_path("pds_geometry_cache.json", "data")
 
         cache: dict[str, Any] = {}
-        if geom_cache_path.exists():
+        existing = find_file("pds_geometry_cache.json", "data")
+        if existing is not None:
             try:
-                cache = json.loads(geom_cache_path.read_text())
+                cache = json.loads(existing.read_text())
             except Exception:
                 pass
 

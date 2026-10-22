@@ -118,6 +118,8 @@ include = ["luna", "luna.*"]
 luna = [
     "py.typed",
     "easter_egg/data/*",
+    "resources/catalogs/*",
+    "resources/data/*",
 ]
 
 [tool.pytest.ini_options]
